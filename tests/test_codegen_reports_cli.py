@@ -7,7 +7,7 @@ from jitx_mechanical.codegen import generate_board_module
 from jitx_mechanical.importers.dxf import import_dxf
 from jitx_mechanical.reports import import_to_markdown, write_import_report
 
-FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURES = Path(__file__).parent / "fixtures" / "dxf"
 
 
 def test_codegen_board_only_no_design_or_circuit():
