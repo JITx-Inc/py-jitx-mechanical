@@ -7,7 +7,7 @@ import ezdxf
 from jitx_mechanical.importers.dxf import import_dxf, read_dxf
 from jitx_mechanical.models import CircleGeometry, HolePolicy
 
-FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURES = Path(__file__).parent / "fixtures" / "dxf"
 
 
 def test_read_dxf_inventory():
