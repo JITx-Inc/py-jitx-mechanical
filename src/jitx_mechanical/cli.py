@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .codegen import generate_board_module
+from .codegen import generate_board_module, generate_components_module
 from .exporters.dxf import DxfExportConfig, export_dxf
 from .importers.dxf import import_dxf, read_dxf
 from .importers.idf import import_idf
@@ -117,8 +117,21 @@ def _cmd_import(args: argparse.Namespace) -> None:
     output_path.write_text(code)
     write_import_report(imported, str(report_path))
 
+    components_code = generate_components_module(
+        imported,
+        module_name=input_path.name,
+        recenter=not args.no_recenter,
+        precision=args.precision,
+    )
+    components_path: Path | None = None
+    if components_code:
+        components_path = output_path.with_name(f"{output_path.stem}_components.py")
+        components_path.write_text(components_code)
+
     _print_import_summary(imported, file=sys.stderr)
     print(f"  Python: {output_path}", file=sys.stderr)
+    if components_path is not None:
+        print(f"  Components: {components_path}", file=sys.stderr)
     print(f"  Report: {report_path}", file=sys.stderr)
 
 
