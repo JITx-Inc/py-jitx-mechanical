@@ -12,10 +12,24 @@ from .models import (
     ClosedPath,
     Geometry,
     LinePathSegment,
+    MechanicalAnnotation,
     MechanicalComponent,
     MechanicalImport,
+    MechanicalRegion,
     Point,
 )
+
+_KEEPOUT_ROLES = frozenset({"route_keepout", "via_keepout"})
+_CUSTOM_REGION_ROLES = frozenset(
+    {"place_keepout", "place_outline", "route_outline", "other_outline"}
+)
+_DEFAULT_ANNOTATION_HEIGHT_MM = 1.0
+_CUSTOM_NAME_BY_ROLE = {
+    "place_keepout": "PlaceKeepout",
+    "place_outline": "PlaceOutline",
+    "route_outline": "RouteOutline",
+    "other_outline": "OtherOutline",
+}
 
 DEFAULT_PRECISION = 4
 DEFAULT_ANNULAR_PAD_MARGIN_MM = 0.4
@@ -54,6 +68,15 @@ def generate_board_module(
             + geometry_to_code(imported.board_outline, offset=offset, indent=1, precision=precision)
         )
 
+    init_lines = _emit_board_init_features(
+        imported, offset=offset, precision=precision
+    )
+    if init_lines:
+        lines.append("")
+        lines.append("    def __init__(self):")
+        lines.append("        super().__init__()")
+        lines.extend(init_lines)
+
     lines.append("")
     lines.append("")
     lines.append("# Interior board cutout geometry imported from the source file.")
@@ -64,23 +87,6 @@ def generate_board_module(
             "    "
             + geometry_to_code(cutout, offset=offset, indent=1, precision=precision)
             + ","
-        )
-    lines.append("]")
-
-    lines.append("")
-    lines.append("MECHANICAL_ANNOTATIONS = [")
-    for annotation in imported.annotations:
-        x = _fmt(annotation.position.x + offset.x, precision=precision)
-        y = _fmt(annotation.position.y + offset.y, precision=precision)
-        lines.append(
-            "    "
-            + "{"
-            + f'"role": "{_escape(annotation.role)}", '
-            + f'"text": "{_escape(annotation.text)}", '
-            + f'"at": ({x}, {y}), '
-            + f'"height": {_fmt(annotation.height, precision=precision)}, '
-            + f'"source": "{_escape(annotation.source_name)}"'
-            + "},"
         )
     lines.append("]")
 
@@ -140,6 +146,7 @@ def _imports(imported: MechanicalImport) -> list[str]:
     if imported.board_outline is not None:
         geometries.append(imported.board_outline)
     geometries.extend(imported.board_cutouts)
+    geometries.extend(region.geometry for region in imported.regions)
 
     needs_arc_polygon = any(
         isinstance(geometry, ClosedPath)
@@ -148,6 +155,13 @@ def _imports(imported: MechanicalImport) -> list[str]:
     )
     needs_circle = any(isinstance(geometry, CircleGeometry) for geometry in geometries)
     needs_polygon = any(isinstance(geometry, ClosedPath) for geometry in geometries)
+    needs_text = bool(imported.annotations)
+
+    keepout_regions = [r for r in imported.regions if r.role in _KEEPOUT_ROLES]
+    custom_regions = [r for r in imported.regions if r.role in _CUSTOM_REGION_ROLES]
+    needs_keepout = bool(keepout_regions)
+    needs_custom = bool(custom_regions) or needs_text
+    needs_layerset = needs_keepout
 
     shape_imports: list[str] = []
     if needs_arc_polygon:
@@ -156,11 +170,118 @@ def _imports(imported: MechanicalImport) -> list[str]:
         shape_imports.append("Circle")
     if needs_polygon:
         shape_imports.append("Polygon")
+    if needs_text:
+        shape_imports.append("Text")
+
+    feature_imports: list[str] = []
+    if needs_keepout:
+        feature_imports.append("KeepOut")
+    if needs_custom:
+        feature_imports.append("Custom")
 
     lines = ["from jitx.board import Board"]
+    if feature_imports:
+        lines.append(f"from jitx.feature import {', '.join(feature_imports)}")
+    if needs_layerset:
+        lines.append("from jitx.layerindex import LayerSet")
     if shape_imports:
         lines.append(f"from jitx.shapes.primitive import {', '.join(shape_imports)}")
     return lines
+
+
+def _emit_board_init_features(
+    imported: MechanicalImport,
+    *,
+    offset: Point,
+    precision: int,
+) -> list[str]:
+    """Yield indented body lines for Board.__init__, one feature assignment per role+index.
+
+    Returns an empty list when there are no regions or annotations — the caller
+    omits the `def __init__` block entirely in that case.
+    """
+    regions = list(imported.regions)
+    annotations = list(imported.annotations)
+    if not regions and not annotations:
+        return []
+
+    body: list[str] = []
+    role_counter: dict[str, int] = {}
+
+    for region in regions:
+        idx = role_counter.get(region.role, 0)
+        role_counter[region.role] = idx + 1
+        attr = f"{region.role}_{idx}"
+        body.extend(
+            _region_feature_lines(region, attr, offset=offset, precision=precision)
+        )
+
+    note_idx = 0
+    for annotation in annotations:
+        attr = f"note_{note_idx}"
+        note_idx += 1
+        body.extend(
+            _annotation_feature_lines(annotation, attr, offset=offset, precision=precision)
+        )
+
+    return body
+
+
+def _region_feature_lines(
+    region: MechanicalRegion,
+    attr: str,
+    *,
+    offset: Point,
+    precision: int,
+) -> list[str]:
+    shape_code = geometry_to_code(
+        region.geometry, offset=offset, indent=2, precision=precision
+    )
+    if region.role in _KEEPOUT_ROLES:
+        kind_kwarg = "route=True" if region.role == "route_keepout" else "via=True"
+        layer_code = _layer_string_to_layerset(region.layers)
+        return [
+            f"        self.{attr} = KeepOut(",
+            f"            {shape_code},",
+            f"            layers={layer_code},",
+            f"            {kind_kwarg},",
+            "        )",
+        ]
+    name = _CUSTOM_NAME_BY_ROLE.get(region.role, _to_pascal(region.role))
+    return [
+        f'        self.{attr} = Custom({shape_code}, name="{_escape(name)}")',
+    ]
+
+
+def _annotation_feature_lines(
+    annotation: MechanicalAnnotation,
+    attr: str,
+    *,
+    offset: Point,
+    precision: int,
+) -> list[str]:
+    text = _escape(annotation.text)
+    height = annotation.height if annotation.height > 0 else _DEFAULT_ANNOTATION_HEIGHT_MM
+    height_code = _fmt(height, precision=precision)
+    x = _fmt(annotation.position.x + offset.x, precision=precision)
+    y = _fmt(annotation.position.y + offset.y, precision=precision)
+    return [
+        f'        self.{attr} = Custom('
+        f'Text("{text}", {height_code}).at({x}, {y}), name="Note")'
+    ]
+
+
+def _layer_string_to_layerset(layers: str) -> str:
+    token = (layers or "").strip().upper()
+    if token == "TOP":
+        return "LayerSet(0)"
+    if token == "BOTTOM":
+        return "LayerSet(-1)"
+    return "LayerSet.all()"
+
+
+def _to_pascal(snake: str) -> str:
+    return "".join(part.capitalize() for part in snake.split("_") if part) or "Custom"
 
 
 def _circle_to_code(

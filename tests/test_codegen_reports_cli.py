@@ -198,6 +198,67 @@ def test_cli_skips_components_file_with_cutout_policy(tmp_path):
     assert "Components:" not in result.stderr
 
 
+def test_board_features_from_regions_and_notes(tmp_path):
+    """Real EMN keepouts and notes land as KeepOut/Custom features on the Board."""
+    imported = import_idf(str(EMN_FIXTURES / "352a900-1.emn"))
+    code = generate_board_module(imported, class_name="M900Board")
+    ast.parse(code)
+
+    assert "from jitx.feature import Custom" in code
+    assert "    def __init__(self):" in code
+    assert "        super().__init__()" in code
+    # 352a900 has place_keepouts and notes (no route/via keepouts).
+    assert 'Custom(' in code
+    assert 'name="PlaceKeepout"' in code
+    assert 'name="Note"' in code
+    assert "Text(" in code
+    # No KeepOut on this fixture (no route/via keepouts) → no LayerSet import either.
+    assert "KeepOut(" not in code
+    assert "from jitx.layerindex import LayerSet" not in code
+
+
+def test_board_features_route_and_via_keepouts():
+    """Route + via keepouts on the big fixture become KeepOut features with the right kwarg."""
+    imported = import_idf(str(EMN_FIXTURES / "353A814.emn"))
+    code = generate_board_module(imported, class_name="BigBoard")
+    ast.parse(code)
+
+    assert "from jitx.feature import KeepOut, Custom" in code
+    assert "from jitx.layerindex import LayerSet" in code
+
+    # 353A814: 2521 route_keepout + 126 via_keepout = 2647 KeepOut features total.
+    assert code.count("KeepOut(") == 2647
+    # All keepouts carry exactly one of route=True / via=True.
+    assert code.count("route=True") == 2521
+    assert code.count("via=True") == 126
+
+
+def test_board_features_omitted_when_no_regions_or_notes():
+    """Fixture with no regions / notes → no __init__ block, no feature imports."""
+    imported = import_idf(str(EMN_FIXTURES / "squarecut.emn"))
+    assert not imported.regions
+    assert not imported.annotations
+
+    code = generate_board_module(imported, class_name="SquareCutBoard")
+    ast.parse(code)
+    assert "def __init__(self):" not in code
+    assert "from jitx.feature import" not in code
+    assert "from jitx.layerindex import LayerSet" not in code
+
+
+def test_layer_string_mapping():
+    """EMN side tokens map to the right LayerSet expression."""
+    from jitx_mechanical.codegen import _layer_string_to_layerset
+
+    assert _layer_string_to_layerset("TOP") == "LayerSet(0)"
+    assert _layer_string_to_layerset("Top") == "LayerSet(0)"  # case-insensitive
+    assert _layer_string_to_layerset("BOTTOM") == "LayerSet(-1)"
+    assert _layer_string_to_layerset("BOTH") == "LayerSet.all()"
+    assert _layer_string_to_layerset("ALL") == "LayerSet.all()"
+    assert _layer_string_to_layerset("") == "LayerSet.all()"
+    assert _layer_string_to_layerset("WAT") == "LayerSet.all()"
+
+
 def test_cli_inspect_emn(tmp_path):
     """`jitx-mechanical inspect board.emn` prints a summary without error."""
     result = subprocess.run(
