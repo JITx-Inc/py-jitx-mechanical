@@ -1,5 +1,11 @@
 # jitx-mechanical
 
+> **Support status — please read.** This code is provided on a best-effort
+> basis with **no guarantee of future compatibility**. Newer JITX releases
+> are expected to deprecate the functions exposed here as native mechanical
+> import/export support lands in the JITX core. Pin to a specific version if
+> you need stable behavior, and expect to migrate when the deprecation arrives.
+
 Mechanical import and export helpers for JITX Python projects.
 
 This package imports DXF and EMN/IDF/IDX-compatible mechanical board data into
