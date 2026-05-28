@@ -1,0 +1,12 @@
+.HEADER
+BOARD_FILE 3.0 "Creo Parametric 10.0 10.0.4.0" 2024/12/09.14:19:17 3
+POLYGON_THATS_A_CIRCLE                               MM      
+.END_HEADER
+.BOARD_OUTLINE  MCAD
+113.92000           
+         0         -10.00000           -10.0000             0.00000
+         0          10.00000           -10.0000             90.00000
+         0          10.00000            10.0000             90.00000
+         0         -10.00000            10.0000             90.00000
+         0         -10.00000           -10.0000             90.00000
+.END_BOARD_OUTLINE
