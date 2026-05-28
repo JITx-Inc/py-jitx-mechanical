@@ -12,8 +12,10 @@ from ezdxf.filemanagement import new as ezdxf_new
 from ezdxf.layouts.layout import Modelspace
 
 from jitx_mechanical.models import (
+    ArcShape,
     BoardData,
     CirclePad,
+    CircleShape,
     CopperArc,
     CopperLine,
     CopperPolygon,
@@ -26,6 +28,8 @@ from jitx_mechanical.models import (
     PolygonShape,
     Pose,
     RectanglePad,
+    RectangleShape,
+    TextShape,
     Via,
 )
 from jitx_mechanical.transforms import transform_angle, transform_point
@@ -89,6 +93,8 @@ def get_dxf_layer(layer_name: str, side: str) -> str:
     Well-known PCB layer names are normalized to Title_Case for consistency.
     Unknown names are passed through with the side suffix.
     """
+    if _is_drill_layer(layer_name):
+        return "Drill"
     normalized = _LAYER_NAME_MAP.get(layer_name)
     if normalized is not None:
         return f"{normalized}_{side}"
@@ -108,6 +114,10 @@ _LAYER_NAME_MAP: dict[str, str] = {
 def _flip_side(side: str) -> str:
     """Return the opposite board side."""
     return "Bottom" if side == "Top" else "Top"
+
+
+def _is_drill_layer(layer_name: str) -> bool:
+    return layer_name.upper() in {"DRILL", "HOLE"}
 
 
 def resolve_side(shape_side: str, inst_side: str) -> str:
@@ -160,17 +170,43 @@ def _collect_layers(data: BoardData) -> set[str]:
         for ls in pkg.lines:
             resolved = resolve_side(ls.side, inst.side)
             layers.add(get_dxf_layer(ls.layer_name, resolved))
+        for circle in pkg.circles:
+            resolved = resolve_side(circle.side, inst.side)
+            layers.add(get_dxf_layer(circle.layer_name, resolved))
+        for arc in pkg.arcs:
+            resolved = resolve_side(arc.side, inst.side)
+            layers.add(get_dxf_layer(arc.layer_name, resolved))
+        for rect in pkg.rectangles:
+            resolved = resolve_side(rect.side, inst.side)
+            layers.add(get_dxf_layer(rect.layer_name, resolved))
+        for text in pkg.texts:
+            resolved = resolve_side(text.side, inst.side)
+            layers.add(get_dxf_layer(text.layer_name, resolved))
         for ts in inst.shapes_text:
             layers.add(get_dxf_layer(ts.layer_name, ts.side))
         for poly in inst.shapes_polygon:
             layers.add(get_dxf_layer(poly.layer_name, poly.side))
         for ls in inst.shapes_line:
             layers.add(get_dxf_layer(ls.layer_name, ls.side))
+        for circle in inst.shapes_circle:
+            layers.add(get_dxf_layer(circle.layer_name, circle.side))
+        for arc in inst.shapes_arc:
+            layers.add(get_dxf_layer(arc.layer_name, arc.side))
+        for rect in inst.shapes_rectangle:
+            layers.add(get_dxf_layer(rect.layer_name, rect.side))
 
     for shape in data.board_shapes:
         layers.add(get_dxf_layer(shape.layer_name, shape.side))
     for ls in data.board_line_shapes:
         layers.add(get_dxf_layer(ls.layer_name, ls.side))
+    for circle in data.board_circle_shapes:
+        layers.add(get_dxf_layer(circle.layer_name, circle.side))
+    for arc in data.board_arc_shapes:
+        layers.add(get_dxf_layer(arc.layer_name, arc.side))
+    for rect in data.board_rectangle_shapes:
+        layers.add(get_dxf_layer(rect.layer_name, rect.side))
+    for text in data.board_text_shapes:
+        layers.add(get_dxf_layer(text.layer_name, text.side))
 
     return layers
 
@@ -441,6 +477,114 @@ def emit_line_shape(
     _add_wide_line(msp, (p1.x, p1.y), (p2.x, p2.y), line_shape.line.width, layer)
 
 
+def emit_circle_shape(
+    msp: Modelspace,
+    circle_shape: CircleShape,
+    pose: Pose | None = None,
+    layer: str | None = None,
+) -> None:
+    if layer is None:
+        layer = get_dxf_layer(circle_shape.layer_name, circle_shape.side)
+    center = circle_shape.center
+    if pose is not None:
+        center = transform_point(center, pose)
+    msp.add_circle(
+        center=(center.x, center.y),
+        radius=circle_shape.radius,
+        dxfattribs={"layer": layer},
+    )
+
+
+def _transform_arc_angles(start_angle: float, end_angle: float, pose: Pose | None) -> tuple[float, float]:
+    if pose is None:
+        return start_angle, end_angle
+    if pose.flip_x:
+        return transform_angle(end_angle, pose), transform_angle(start_angle, pose)
+    return transform_angle(start_angle, pose), transform_angle(end_angle, pose)
+
+
+def emit_arc_shape(
+    msp: Modelspace,
+    arc_shape: ArcShape,
+    pose: Pose | None = None,
+    layer: str | None = None,
+) -> None:
+    if layer is None:
+        layer = get_dxf_layer(arc_shape.layer_name, arc_shape.side)
+    arc = arc_shape.arc
+    center = arc.center
+    if pose is not None:
+        center = transform_point(center, pose)
+    start_angle, end_angle = _transform_arc_angles(arc.start_angle, arc.end_angle, pose)
+    if arc.width > 0.0:
+        _add_wide_arc(
+            msp,
+            (center.x, center.y),
+            arc.radius,
+            start_angle,
+            end_angle,
+            arc.width,
+            layer,
+        )
+    else:
+        msp.add_arc(
+            center=(center.x, center.y),
+            radius=arc.radius,
+            start_angle=start_angle,
+            end_angle=end_angle,
+            dxfattribs={"layer": layer},
+        )
+
+
+def emit_rectangle_shape(
+    msp: Modelspace,
+    rectangle_shape: RectangleShape,
+    pose: Pose | None = None,
+    layer: str | None = None,
+) -> None:
+    if layer is None:
+        layer = get_dxf_layer(rectangle_shape.layer_name, rectangle_shape.side)
+    hw = rectangle_shape.width / 2.0
+    hh = rectangle_shape.height / 2.0
+    corners = [
+        Point(-hw, -hh),
+        Point(hw, -hh),
+        Point(hw, hh),
+        Point(-hw, hh),
+    ]
+    transformed = []
+    for pt in corners:
+        rect_pt = transform_point(pt, rectangle_shape.pose)
+        if pose is not None:
+            rect_pt = transform_point(rect_pt, pose)
+        transformed.append((rect_pt.x, rect_pt.y))
+    msp.add_lwpolyline(transformed, close=True, dxfattribs={"layer": layer})
+
+
+def emit_text_shape(
+    msp: Modelspace,
+    text_shape: TextShape,
+    pose: Pose | None = None,
+    layer: str | None = None,
+) -> None:
+    if layer is None:
+        layer = get_dxf_layer(text_shape.layer_name, text_shape.side)
+    text_pt = Point(x=text_shape.pose.x, y=text_shape.pose.y)
+    rotation = text_shape.pose.angle
+    if pose is not None:
+        text_pt = transform_point(text_pt, pose)
+        rotation = transform_angle(rotation, pose)
+    msp.add_text(
+        text_shape.string,
+        height=text_shape.size,
+        dxfattribs={
+            "layer": layer,
+            "rotation": rotation,
+            "insert": (text_pt.x, text_pt.y),
+        },
+    )
+
+
 def emit_instance(
     msp: Modelspace,
     inst: Instance,
@@ -482,6 +626,26 @@ def emit_instance(
         layer = get_dxf_layer(line_shape.layer_name, resolved_side)
         if layer_filter is None or layer in layer_filter:
             emit_line_shape(msp, line_shape, inst.pose, layer)
+    for circle_shape in pkg.circles:
+        resolved_side = resolve_side(circle_shape.side, inst.side)
+        layer = get_dxf_layer(circle_shape.layer_name, resolved_side)
+        if layer_filter is None or layer in layer_filter:
+            emit_circle_shape(msp, circle_shape, inst.pose, layer)
+    for arc_shape in pkg.arcs:
+        resolved_side = resolve_side(arc_shape.side, inst.side)
+        layer = get_dxf_layer(arc_shape.layer_name, resolved_side)
+        if layer_filter is None or layer in layer_filter:
+            emit_arc_shape(msp, arc_shape, inst.pose, layer)
+    for rectangle_shape in pkg.rectangles:
+        resolved_side = resolve_side(rectangle_shape.side, inst.side)
+        layer = get_dxf_layer(rectangle_shape.layer_name, resolved_side)
+        if layer_filter is None or layer in layer_filter:
+            emit_rectangle_shape(msp, rectangle_shape, inst.pose, layer)
+    for text_shape in pkg.texts:
+        resolved_side = resolve_side(text_shape.side, inst.side)
+        layer = get_dxf_layer(text_shape.layer_name, resolved_side)
+        if layer_filter is None or layer in layer_filter:
+            emit_text_shape(msp, text_shape, inst.pose, layer)
 
     if layer_filter is None or "Components" in layer_filter:
         if inst.designator_text is not None:
@@ -505,15 +669,7 @@ def emit_instance(
         layer = get_dxf_layer(ts.layer_name, ts.side)
         if layer_filter is not None and layer not in layer_filter:
             continue
-        msp.add_text(
-            ts.string,
-            height=ts.size,
-            dxfattribs={
-                "layer": layer,
-                "rotation": ts.pose.angle,
-                "insert": (ts.pose.x, ts.pose.y),
-            },
-        )
+        emit_text_shape(msp, ts, layer=layer)
     for poly in inst.shapes_polygon:
         layer = get_dxf_layer(poly.layer_name, poly.side)
         if layer_filter is None or layer in layer_filter:
@@ -525,6 +681,18 @@ def emit_instance(
                 msp, (ls.line.p1.x, ls.line.p1.y), (ls.line.p2.x, ls.line.p2.y),
                 ls.line.width, layer,
             )
+    for circle_shape in inst.shapes_circle:
+        layer = get_dxf_layer(circle_shape.layer_name, circle_shape.side)
+        if layer_filter is None or layer in layer_filter:
+            emit_circle_shape(msp, circle_shape, layer=layer)
+    for arc_shape in inst.shapes_arc:
+        layer = get_dxf_layer(arc_shape.layer_name, arc_shape.side)
+        if layer_filter is None or layer in layer_filter:
+            emit_arc_shape(msp, arc_shape, layer=layer)
+    for rectangle_shape in inst.shapes_rectangle:
+        layer = get_dxf_layer(rectangle_shape.layer_name, rectangle_shape.side)
+        if layer_filter is None or layer in layer_filter:
+            emit_rectangle_shape(msp, rectangle_shape, layer=layer)
 
 
 def emit_tracks(
@@ -617,6 +785,67 @@ def emit_board_line_shapes(
             )
 
 
+def emit_board_circle_shapes(
+    msp: Modelspace,
+    circle_shapes: list[CircleShape],
+    layer_filter: set[str] | None,
+) -> None:
+    for circle_shape in circle_shapes:
+        layer = get_dxf_layer(circle_shape.layer_name, circle_shape.side)
+        if layer_filter is None or layer in layer_filter:
+            emit_circle_shape(msp, circle_shape, layer=layer)
+
+
+def emit_board_arc_shapes(
+    msp: Modelspace,
+    arc_shapes: list[ArcShape],
+    layer_filter: set[str] | None,
+) -> None:
+    for arc_shape in arc_shapes:
+        layer = get_dxf_layer(arc_shape.layer_name, arc_shape.side)
+        if layer_filter is None or layer in layer_filter:
+            emit_arc_shape(msp, arc_shape, layer=layer)
+
+
+def emit_board_rectangle_shapes(
+    msp: Modelspace,
+    rectangle_shapes: list[RectangleShape],
+    layer_filter: set[str] | None,
+) -> None:
+    for rectangle_shape in rectangle_shapes:
+        layer = get_dxf_layer(rectangle_shape.layer_name, rectangle_shape.side)
+        if layer_filter is None or layer in layer_filter:
+            emit_rectangle_shape(msp, rectangle_shape, layer=layer)
+
+
+def emit_board_text_shapes(
+    msp: Modelspace,
+    text_shapes: list[TextShape],
+    layer_filter: set[str] | None,
+) -> None:
+    for text_shape in text_shapes:
+        layer = get_dxf_layer(text_shape.layer_name, text_shape.side)
+        if layer_filter is None or layer in layer_filter:
+            emit_text_shape(msp, text_shape, layer=layer)
+
+
+def emit_board_drill_shapes(msp: Modelspace, data: BoardData, layer_filter: set[str] | None) -> None:
+    drill_lines = [ls for ls in data.board_line_shapes if _is_drill_layer(ls.layer_name)]
+    drill_polygons = [shape for shape in data.board_shapes if _is_drill_layer(shape.layer_name)]
+    drill_circles = [
+        circle for circle in data.board_circle_shapes if _is_drill_layer(circle.layer_name)
+    ]
+    drill_arcs = [arc for arc in data.board_arc_shapes if _is_drill_layer(arc.layer_name)]
+    drill_rectangles = [
+        rect for rect in data.board_rectangle_shapes if _is_drill_layer(rect.layer_name)
+    ]
+    emit_board_shapes(msp, drill_polygons, layer_filter)
+    emit_board_line_shapes(msp, drill_lines, layer_filter)
+    emit_board_circle_shapes(msp, drill_circles, layer_filter)
+    emit_board_arc_shapes(msp, drill_arcs, layer_filter)
+    emit_board_rectangle_shapes(msp, drill_rectangles, layer_filter)
+
+
 # ─── Main Conversion ─────────────────────────────────────────────────────
 
 
@@ -653,6 +882,10 @@ def export_dxf(
           f"{len(data.instances)} instances, "
           f"{len(data.board_shapes)} board polygon shapes, "
           f"{len(data.board_line_shapes)} board line shapes, "
+          f"{len(data.board_circle_shapes)} board circle shapes, "
+          f"{len(data.board_arc_shapes)} board arc shapes, "
+          f"{len(data.board_rectangle_shapes)} board rectangle shapes, "
+          f"{len(data.board_text_shapes)} board text shapes, "
           f"{len(data.tracks)} tracks ({n_track_lines} line, {n_track_arcs} arc, {n_track_polys} polygon), "
           f"{len(data.fills)} fills, "
           f"{len(data.vias)} vias")
@@ -661,7 +894,9 @@ def export_dxf(
         print(f"  Package '{pkg_name}': {len(pkg.pads)} circle, "
               f"{len(pkg.rectangle_pads)} rect, "
               f"{len(pkg.polygon_pads)} polygon pads, "
-              f"{len(pkg.polygons)} shapes, {len(pkg.lines)} lines")
+              f"{len(pkg.polygons)} shapes, {len(pkg.lines)} lines, "
+              f"{len(pkg.circles)} circles, {len(pkg.arcs)} arcs, "
+              f"{len(pkg.rectangles)} rectangles, {len(pkg.texts)} texts")
 
     for inst in data.instances:
         print(f"  Instance '{inst.designator}': package='{inst.package_name}', "
@@ -690,6 +925,12 @@ def export_dxf(
     if config.include_annotations:
         emit_board_shapes(msp, data.board_shapes, layers)
         emit_board_line_shapes(msp, data.board_line_shapes, layers)
+        emit_board_circle_shapes(msp, data.board_circle_shapes, layers)
+        emit_board_arc_shapes(msp, data.board_arc_shapes, layers)
+        emit_board_rectangle_shapes(msp, data.board_rectangle_shapes, layers)
+        emit_board_text_shapes(msp, data.board_text_shapes, layers)
+    elif config.include_drill:
+        emit_board_drill_shapes(msp, data, layers)
 
     doc.saveas(dxf_path)
     print(f"Written: {dxf_path}")
