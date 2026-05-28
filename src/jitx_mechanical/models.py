@@ -251,6 +251,30 @@ class LineShape:
 
 
 @dataclass
+class CircleShape:
+    center: Point
+    radius: float
+    layer_name: str
+    side: str
+
+
+@dataclass
+class ArcShape:
+    arc: ArcSegment
+    layer_name: str
+    side: str
+
+
+@dataclass
+class RectangleShape:
+    width: float
+    height: float
+    pose: Pose
+    layer_name: str
+    side: str
+
+
+@dataclass
 class TextShape:
     string: str
     size: float
@@ -267,6 +291,10 @@ class Package:
     polygon_pads: list[PolygonPad]
     polygons: list[PolygonShape]
     lines: list[LineShape]
+    circles: list[CircleShape] = field(default_factory=list)
+    arcs: list[ArcShape] = field(default_factory=list)
+    rectangles: list[RectangleShape] = field(default_factory=list)
+    texts: list[TextShape] = field(default_factory=list)
 
 
 @dataclass
@@ -287,6 +315,9 @@ class Instance:
     shapes_text: list[TextShape] = field(default_factory=list)
     shapes_polygon: list[PolygonShape] = field(default_factory=list)
     shapes_line: list[LineShape] = field(default_factory=list)
+    shapes_circle: list[CircleShape] = field(default_factory=list)
+    shapes_arc: list[ArcShape] = field(default_factory=list)
+    shapes_rectangle: list[RectangleShape] = field(default_factory=list)
 
 
 @dataclass
@@ -334,6 +365,10 @@ class BoardData:
     instances: list[Instance]
     board_shapes: list[PolygonShape]
     board_line_shapes: list[LineShape]
+    board_circle_shapes: list[CircleShape]
+    board_arc_shapes: list[ArcShape]
+    board_rectangle_shapes: list[RectangleShape]
+    board_text_shapes: list[TextShape]
     tracks: list[CopperShape]
     fills: list[CopperPolygon]
     vias: list[Via]
