@@ -6,8 +6,10 @@ import xml.etree.ElementTree as ET
 
 from .models import (
     ArcSegment,
+    ArcShape,
     BoardData,
     CirclePad,
+    CircleShape,
     CopperArc,
     CopperLine,
     CopperPolygon,
@@ -22,6 +24,7 @@ from .models import (
     PolygonShape,
     Pose,
     RectanglePad,
+    RectangleShape,
     TextShape,
     Via,
 )
@@ -43,6 +46,68 @@ def parse_pose(elem: ET.Element) -> Pose:
         y=float(_attr(elem, "Y")),
         angle=float(_attr(elem, "ANGLE")),
         flip_x=_attr(elem, "FLIPX", "false").lower() == "true",
+    )
+
+
+def _parse_shape_center(elem: ET.Element) -> Point:
+    point_elem = elem.find("POINT")
+    if point_elem is not None:
+        return parse_point(point_elem)
+    pose_elem = elem.find("POSE")
+    if pose_elem is not None:
+        pose = parse_pose(pose_elem)
+        return Point(pose.x, pose.y)
+    return Point(x=float(_attr(elem, "X")), y=float(_attr(elem, "Y")))
+
+
+def _parse_optional_pose(elem: ET.Element) -> Pose:
+    pose_elem = elem.find("POSE")
+    if pose_elem is not None:
+        return parse_pose(pose_elem)
+    return parse_pose(elem)
+
+
+def _parse_arc(elem: ET.Element) -> ArcSegment:
+    return ArcSegment(
+        center=Point(
+            x=float(_attr(elem, "X")),
+            y=float(_attr(elem, "Y")),
+        ),
+        radius=float(_attr(elem, "RADIUS")),
+        start_angle=float(_attr(elem, "START_ANGLE")),
+        end_angle=float(_attr(elem, "END_ANGLE")),
+        width=float(elem.get("WIDTH", "0.0")),
+    )
+
+
+def _parse_hole_circle(hole_elem: ET.Element, *, layer_name: str = "DRILL") -> CircleShape | None:
+    circle_elem = hole_elem.find("CIRCLE")
+    if circle_elem is None:
+        return None
+    if circle_elem.find("POINT") is not None or circle_elem.find("POSE") is not None:
+        center = _parse_shape_center(circle_elem)
+    elif "X" in circle_elem.attrib or "Y" in circle_elem.attrib:
+        center = _parse_shape_center(circle_elem)
+    else:
+        center = _parse_shape_center(hole_elem)
+    return CircleShape(
+        center=center,
+        radius=float(_attr(circle_elem, "RADIUS")),
+        layer_name=layer_name,
+        side="Top",
+    )
+
+
+def _parse_text_shape(text_elem: ET.Element, layer_name: str, side: str) -> TextShape | None:
+    pose_elem = text_elem.find("POSE")
+    if pose_elem is None:
+        return None
+    return TextShape(
+        string=text_elem.get("STRING", ""),
+        size=float(text_elem.get("SIZE", "1.0")),
+        pose=parse_pose(pose_elem),
+        layer_name=layer_name,
+        side=side,
     )
 
 
@@ -94,6 +159,10 @@ def parse_package(pkg_elem: ET.Element) -> Package:
     polygon_pads: list[PolygonPad] = []
     polygons: list[PolygonShape] = []
     lines: list[LineShape] = []
+    circles: list[CircleShape] = []
+    arcs: list[ArcShape] = []
+    rectangles: list[RectangleShape] = []
+    texts: list[TextShape] = []
 
     for pad_elem in pkg_elem.findall("PAD"):
         pose_elem = pad_elem.find("POSE")
@@ -168,7 +237,55 @@ def parse_package(pkg_elem: ET.Element) -> Package:
                     )
                 )
 
-    return Package(name=name, pads=pads, rectangle_pads=rectangle_pads, polygon_pads=polygon_pads, polygons=polygons, lines=lines)
+        circle_elem = shape_elem.find("CIRCLE")
+        if circle_elem is not None:
+            circles.append(
+                CircleShape(
+                    center=_parse_shape_center(circle_elem),
+                    radius=float(_attr(circle_elem, "RADIUS")),
+                    layer_name=layer_name,
+                    side=side,
+                )
+            )
+
+        arc_elem = shape_elem.find("ARC")
+        if arc_elem is not None:
+            arcs.append(ArcShape(arc=_parse_arc(arc_elem), layer_name=layer_name, side=side))
+
+        rectangle_elem = shape_elem.find("RECTANGLE")
+        if rectangle_elem is not None:
+            rectangles.append(
+                RectangleShape(
+                    width=float(_attr(rectangle_elem, "WIDTH")),
+                    height=float(_attr(rectangle_elem, "HEIGHT")),
+                    pose=_parse_optional_pose(rectangle_elem),
+                    layer_name=layer_name,
+                    side=side,
+                )
+            )
+        text_elem = shape_elem.find("TEXT")
+        if text_elem is not None:
+            text_shape = _parse_text_shape(text_elem, layer_name, side)
+            if text_shape is not None:
+                texts.append(text_shape)
+
+    for hole_elem in pkg_elem.findall("HOLE"):
+        hole = _parse_hole_circle(hole_elem)
+        if hole is not None:
+            circles.append(hole)
+
+    return Package(
+        name=name,
+        pads=pads,
+        rectangle_pads=rectangle_pads,
+        polygon_pads=polygon_pads,
+        polygons=polygons,
+        lines=lines,
+        circles=circles,
+        arcs=arcs,
+        rectangles=rectangles,
+        texts=texts,
+    )
 
 
 def parse_instance(inst_elem: ET.Element) -> Instance:
@@ -192,6 +309,9 @@ def parse_instance(inst_elem: ET.Element) -> Instance:
     inst_texts: list[TextShape] = []
     inst_polygons: list[PolygonShape] = []
     inst_lines: list[LineShape] = []
+    inst_circles: list[CircleShape] = []
+    inst_arcs: list[ArcShape] = []
+    inst_rectangles: list[RectangleShape] = []
     for shape_elem in inst_elem.findall("SHAPE"):
         layer_spec = shape_elem.find("LAYER-SPECIFIER")
         if layer_spec is None:
@@ -200,15 +320,9 @@ def parse_instance(inst_elem: ET.Element) -> Instance:
         side = layer_spec.get("SIDE", "Top")
         text_elem = shape_elem.find("TEXT")
         if text_elem is not None:
-            text_pose_elem = text_elem.find("POSE")
-            if text_pose_elem is not None:
-                inst_texts.append(TextShape(
-                    string=text_elem.get("STRING", ""),
-                    size=float(text_elem.get("SIZE", "1.0")),
-                    pose=parse_pose(text_pose_elem),
-                    layer_name=layer_name,
-                    side=side,
-                ))
+            text_shape = _parse_text_shape(text_elem, layer_name, side)
+            if text_shape is not None:
+                inst_texts.append(text_shape)
         polygon_elem = shape_elem.find("POLYGON")
         if polygon_elem is not None:
             points = [parse_point(p) for p in polygon_elem.findall("POINT")]
@@ -227,6 +341,30 @@ def parse_instance(inst_elem: ET.Element) -> Instance:
                         side=side,
                     )
                 )
+        circle_elem = shape_elem.find("CIRCLE")
+        if circle_elem is not None:
+            inst_circles.append(
+                CircleShape(
+                    center=_parse_shape_center(circle_elem),
+                    radius=float(_attr(circle_elem, "RADIUS")),
+                    layer_name=layer_name,
+                    side=side,
+                )
+            )
+        arc_elem = shape_elem.find("ARC")
+        if arc_elem is not None:
+            inst_arcs.append(ArcShape(arc=_parse_arc(arc_elem), layer_name=layer_name, side=side))
+        rectangle_elem = shape_elem.find("RECTANGLE")
+        if rectangle_elem is not None:
+            inst_rectangles.append(
+                RectangleShape(
+                    width=float(_attr(rectangle_elem, "WIDTH")),
+                    height=float(_attr(rectangle_elem, "HEIGHT")),
+                    pose=_parse_optional_pose(rectangle_elem),
+                    layer_name=layer_name,
+                    side=side,
+                )
+            )
 
     return Instance(
         designator=_attr(inst_elem, "DESIGNATOR", ""),
@@ -237,12 +375,28 @@ def parse_instance(inst_elem: ET.Element) -> Instance:
         shapes_text=inst_texts,
         shapes_polygon=inst_polygons,
         shapes_line=inst_lines,
+        shapes_circle=inst_circles,
+        shapes_arc=inst_arcs,
+        shapes_rectangle=inst_rectangles,
     )
 
 
-def parse_board_shapes(board: ET.Element) -> tuple[list[PolygonShape], list[LineShape]]:
+def parse_board_shapes(
+    board: ET.Element,
+) -> tuple[
+    list[PolygonShape],
+    list[LineShape],
+    list[CircleShape],
+    list[ArcShape],
+    list[RectangleShape],
+    list[TextShape],
+]:
     polygons: list[PolygonShape] = []
     lines: list[LineShape] = []
+    circles: list[CircleShape] = []
+    arcs: list[ArcShape] = []
+    rectangles: list[RectangleShape] = []
+    texts: list[TextShape] = []
     for shape_elem in board.findall("SHAPE"):
         layer_spec = shape_elem.find("LAYER-SPECIFIER")
         if layer_spec is None:
@@ -267,7 +421,45 @@ def parse_board_shapes(board: ET.Element) -> tuple[list[PolygonShape], list[Line
                         side=side,
                     )
                 )
-    return polygons, lines
+        circle_elem = shape_elem.find("CIRCLE")
+        if circle_elem is not None:
+            circles.append(
+                CircleShape(
+                    center=_parse_shape_center(circle_elem),
+                    radius=float(_attr(circle_elem, "RADIUS")),
+                    layer_name=layer_name,
+                    side=side,
+                )
+            )
+        arc_elem = shape_elem.find("ARC")
+        if arc_elem is not None:
+            arcs.append(ArcShape(arc=_parse_arc(arc_elem), layer_name=layer_name, side=side))
+        rectangle_elem = shape_elem.find("RECTANGLE")
+        if rectangle_elem is not None:
+            rectangles.append(
+                RectangleShape(
+                    width=float(_attr(rectangle_elem, "WIDTH")),
+                    height=float(_attr(rectangle_elem, "HEIGHT")),
+                    pose=_parse_optional_pose(rectangle_elem),
+                    layer_name=layer_name,
+                    side=side,
+                )
+            )
+        text_elem = shape_elem.find("TEXT")
+        if text_elem is not None:
+            text_shape = _parse_text_shape(text_elem, layer_name, side)
+            if text_shape is not None:
+                texts.append(text_shape)
+    return polygons, lines, circles, arcs, rectangles, texts
+
+
+def parse_board_holes(board: ET.Element) -> list[CircleShape]:
+    holes: list[CircleShape] = []
+    for hole_elem in board.findall("HOLE"):
+        hole = _parse_hole_circle(hole_elem)
+        if hole is not None:
+            holes.append(hole)
+    return holes
 
 
 def _parse_layer_index(shape_elem: ET.Element) -> int:
@@ -386,7 +578,15 @@ def parse_xml(xml_path: str) -> BoardData:
         packages[pkg.name] = pkg
 
     instances = [parse_instance(inst) for inst in board.findall("INST")]
-    board_polygon_shapes, board_line_shapes = parse_board_shapes(board)
+    (
+        board_polygon_shapes,
+        board_line_shapes,
+        board_circle_shapes,
+        board_arc_shapes,
+        board_rectangle_shapes,
+        board_text_shapes,
+    ) = parse_board_shapes(board)
+    board_circle_shapes.extend(parse_board_holes(board))
     tracks = parse_tracks(board)
     fills = parse_fills(board)
     vias = parse_vias(board)
@@ -399,6 +599,10 @@ def parse_xml(xml_path: str) -> BoardData:
         instances=instances,
         board_shapes=board_polygon_shapes,
         board_line_shapes=board_line_shapes,
+        board_circle_shapes=board_circle_shapes,
+        board_arc_shapes=board_arc_shapes,
+        board_rectangle_shapes=board_rectangle_shapes,
+        board_text_shapes=board_text_shapes,
         tracks=tracks,
         fills=fills,
         vias=vias,
