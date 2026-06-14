@@ -62,8 +62,18 @@ write_import_report(imported, "board.report.md")
 ## Development
 
 ```bash
-uv run --with pytest --with ruff pytest -q
-uv run --with ruff ruff check src tests
+python3 -m pip install -e ".[dev]"
+python3 -m pytest -q
+ruff check src tests
 uv run --with build --with twine python3 -m build
 uv run --with twine twine check dist/*
+```
+
+Generated JITX Python stays decoupled from a required `jitx` package dependency.
+To validate generated imports, constructors, and placements against an installed
+JITX 4.2.x runtime API surface, run the optional smoke tests in a JITX 4.2.1
+environment:
+
+```bash
+JITX_MECHANICAL_RUN_JITX_RUNTIME_TESTS=1 python3 -m pytest -q tests/test_jitx_runtime_compat.py -m jitx_runtime
 ```

@@ -42,9 +42,13 @@ packages = ["src/jitx_mechanical"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "jitx_runtime: optional smoke tests for generated code against an installed JITX 4.2.x runtime",
+]
 
 [tool.ruff]
 line-length = 100
