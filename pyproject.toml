@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jitx-mechanical"
+version = "0.1.0"
+description = "Mechanical import and export helpers for JITX Python projects"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    {name = "JITX Inc."}
+]
+dependencies = [
+    "ezdxf>=1.4",
+]
+keywords = ["jitx", "pcb", "eda", "dxf", "emn", "idf", "idx", "mechanical"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.15", "pyright>=1.1", "build>=1.2", "twine>=6"]
+
+[project.scripts]
+jitx-mechanical = "jitx_mechanical.cli:main"
+
+[project.urls]
+Source = "https://github.com/JITx-Inc/py-jitx-mechanical"
+Documentation = "https://docs.jitx.com/"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jitx_mechanical"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "jitx_runtime: optional smoke tests for generated code against an installed JITX 4.2.x runtime",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+include = ["src/jitx_mechanical"]
