@@ -1,4 +1,4 @@
-# jitx-mechanical
+# jitxlib-mechanical
 
 > **Support status — please read.** This code is provided on a best-effort
 > basis with **no guarantee of future compatibility**. Newer JITX releases
@@ -42,7 +42,7 @@ jitx-mechanical export-dxf board.xml --output outline.dxf --layers BoardOutline 
 ## Python API
 
 ```python
-from jitx_mechanical import generate_board_module, import_dxf, import_idf, write_import_report
+from jitxlib.mechanical import generate_board_module, import_dxf, import_idf, write_import_report
 
 imported = import_dxf("board.dxf")
 code = generate_board_module(imported, class_name="ImportedBoard")

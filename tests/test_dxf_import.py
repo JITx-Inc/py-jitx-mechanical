@@ -4,8 +4,8 @@ from pathlib import Path
 
 import ezdxf
 
-from jitx_mechanical.importers.dxf import import_dxf, read_dxf
-from jitx_mechanical.models import CircleGeometry, HolePolicy
+from jitxlib.mechanical.importers.dxf import import_dxf, read_dxf
+from jitxlib.mechanical.models import CircleGeometry, HolePolicy
 
 FIXTURES = Path(__file__).parent / "fixtures" / "dxf"
 

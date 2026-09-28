@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from jitx_mechanical.geometry import (
+from jitxlib.mechanical.geometry import (
     assemble_closed_paths,
     lwpolyline_to_closed_path,
     path_area,
     point_in_path,
 )
-from jitx_mechanical.models import ArcPathSegment, LinePathSegment, Point
+from jitxlib.mechanical.models import ArcPathSegment, LinePathSegment, Point
 
 
 def test_assemble_rectangle_path():
