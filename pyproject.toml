@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "jitx-mechanical"
+name = "jitxlib-mechanical"
 version = "0.1.0"
 description = "Mechanical import and export helpers for JITX Python projects"
 readme = "README.md"
@@ -31,14 +31,14 @@ classifiers = [
 dev = ["pytest>=8", "ruff>=0.15", "pyright>=1.1", "build>=1.2", "twine>=6"]
 
 [project.scripts]
-jitx-mechanical = "jitx_mechanical.cli:main"
+jitx-mechanical = "jitxlib.mechanical.cli:main"
 
 [project.urls]
 Source = "https://github.com/JITx-Inc/py-jitx-mechanical"
 Documentation = "https://docs.jitx.com/"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/jitx_mechanical"]
+packages = ["src/jitxlib"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -59,4 +59,4 @@ ignore = ["E501"]
 
 [tool.pyright]
 pythonVersion = "3.12"
-include = ["src/jitx_mechanical"]
+include = ["src/jitxlib/mechanical"]

@@ -11,7 +11,7 @@ from ezdxf.document import Drawing
 from ezdxf.filemanagement import new as ezdxf_new
 from ezdxf.layouts.layout import Modelspace
 
-from jitx_mechanical.models import (
+from jitxlib.mechanical.models import (
     ArcShape,
     BoardData,
     CirclePad,
@@ -32,8 +32,8 @@ from jitx_mechanical.models import (
     TextShape,
     Via,
 )
-from jitx_mechanical.transforms import transform_angle, transform_point
-from jitx_mechanical.xml_parser import parse_xml
+from jitxlib.mechanical.transforms import transform_angle, transform_point
+from jitxlib.mechanical.xml_parser import parse_xml
 
 
 @dataclass(frozen=True)

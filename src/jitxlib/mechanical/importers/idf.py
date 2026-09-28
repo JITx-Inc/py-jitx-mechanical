@@ -7,8 +7,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from jitx_mechanical.geometry import arc_from_chord, full_circle_from_diameter
-from jitx_mechanical.models import (
+from jitxlib.mechanical.geometry import arc_from_chord, full_circle_from_diameter
+from jitxlib.mechanical.models import (
     CircleGeometry,
     ClosedPath,
     Geometry,

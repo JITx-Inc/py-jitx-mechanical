@@ -5,11 +5,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from jitx_mechanical.codegen import generate_board_module, generate_components_module
-from jitx_mechanical.importers.dxf import import_dxf
-from jitx_mechanical.importers.idf import import_idf
-from jitx_mechanical.models import HolePolicy
-from jitx_mechanical.reports import import_to_markdown, write_import_report
+from jitxlib.mechanical.codegen import generate_board_module, generate_components_module
+from jitxlib.mechanical.importers.dxf import import_dxf
+from jitxlib.mechanical.importers.idf import import_idf
+from jitxlib.mechanical.models import HolePolicy
+from jitxlib.mechanical.reports import import_to_markdown, write_import_report
 
 FIXTURES = Path(__file__).parent / "fixtures" / "dxf"
 EMN_FIXTURES = Path(__file__).parent / "fixtures" / "emn"
@@ -63,7 +63,7 @@ def test_cli_import_emn_end_to_end(tmp_path):
         [
             sys.executable,
             "-m",
-            "jitx_mechanical.cli",
+            "jitxlib.mechanical.cli",
             "import",
             str(EMN_FIXTURES / "squarecut.emn"),
             "-o",
@@ -148,7 +148,7 @@ def test_cli_emits_components_file_with_component_policy(tmp_path):
         [
             sys.executable,
             "-m",
-            "jitx_mechanical.cli",
+            "jitxlib.mechanical.cli",
             "import",
             str(EMN_FIXTURES / "352a900-1.emn"),
             "-o",
@@ -180,7 +180,7 @@ def test_cli_skips_components_file_with_cutout_policy(tmp_path):
         [
             sys.executable,
             "-m",
-            "jitx_mechanical.cli",
+            "jitxlib.mechanical.cli",
             "import",
             str(EMN_FIXTURES / "352a900-1.emn"),
             "-o",
@@ -248,7 +248,7 @@ def test_board_features_omitted_when_no_regions_or_notes():
 
 def test_layer_string_mapping():
     """EMN side tokens map to the right LayerSet expression."""
-    from jitx_mechanical.codegen import _layer_string_to_layerset
+    from jitxlib.mechanical.codegen import _layer_string_to_layerset
 
     assert _layer_string_to_layerset("TOP") == "LayerSet(0)"
     assert _layer_string_to_layerset("Top") == "LayerSet(0)"  # case-insensitive
@@ -265,7 +265,7 @@ def test_cli_inspect_emn(tmp_path):
         [
             sys.executable,
             "-m",
-            "jitx_mechanical.cli",
+            "jitxlib.mechanical.cli",
             "inspect",
             str(EMN_FIXTURES / "352a900-1.emn"),
         ],

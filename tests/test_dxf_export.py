@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ezdxf
 
-from jitx_mechanical.exporters.dxf import DxfExportConfig, export_dxf
+from jitxlib.mechanical.exporters.dxf import DxfExportConfig, export_dxf
 
 
 def _export_xml(tmp_path, xml_text: str, config: DxfExportConfig | None = None):

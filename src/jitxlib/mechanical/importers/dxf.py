@@ -10,14 +10,14 @@ from dataclasses import dataclass, field
 from ezdxf.document import Drawing
 from ezdxf.filemanagement import readfile
 
-from jitx_mechanical.geometry import (
+from jitxlib.mechanical.geometry import (
     assemble_closed_paths,
     geometry_area,
     geometry_center,
     lwpolyline_to_closed_path,
     point_in_geometry,
 )
-from jitx_mechanical.models import (
+from jitxlib.mechanical.models import (
     ArcPathSegment,
     CircleGeometry,
     ClosedPath,

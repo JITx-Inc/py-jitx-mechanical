@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jitx_mechanical.importers.idf import import_idf
-from jitx_mechanical.models import CircleGeometry, ClosedPath, HolePlating, HolePolicy
+from jitxlib.mechanical.importers.idf import import_idf
+from jitxlib.mechanical.models import CircleGeometry, ClosedPath, HolePlating, HolePolicy
 
 
 def _write(tmp_path: Path, text: str, name: str = "test.emn") -> Path:
