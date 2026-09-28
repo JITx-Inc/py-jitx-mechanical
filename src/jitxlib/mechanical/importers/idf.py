@@ -1,9 +1,8 @@
-"""EMN/IDF/IDX mechanical importer."""
+"""IDF 2.0/3.0 mechanical importer, including EMN board files."""
 
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,7 +73,13 @@ def import_idf(
     *,
     hole_policy: HolePolicy | str = HolePolicy.CUTOUT,
 ) -> MechanicalImport:
-    """Import an EMN/IDF/IDX-compatible mechanical file."""
+    """Return IDF 2.0/3.0 board geometry in millimeters and conversion messages.
+
+    ``idf_path`` identifies an IDF text file; EMN and IDF-text IDX/BDF filenames
+    use the same parser. XML interchange is unsupported. ``hole_policy`` selects
+    cutouts or connectable components for plated and unknown holes. Known NPTH
+    holes remain cutouts under either policy. No Python modules are written here.
+    """
 
     parser = IdfParser(idf_path, hole_policy=HolePolicy(hole_policy))
     return parser.parse()
@@ -110,7 +115,9 @@ class IdfParser:
                 self._parse_header(tokens[i + 1 : i + 1 + end_pos])
                 i = i + 1 + end_pos + 1
             elif token in (".BOARD_OUTLINE", ".PANEL_OUTLINE"):
-                end_marker = ".END_PANEL_OUTLINE" if token == ".PANEL_OUTLINE" else ".END_BOARD_OUTLINE"
+                end_marker = (
+                    ".END_PANEL_OUTLINE" if token == ".PANEL_OUTLINE" else ".END_BOARD_OUTLINE"
+                )
                 end_pos = self._find_section_end(tokens[i + 1 :], end_marker)
                 outline = self._parse_board_or_panel_outline(token, tokens[i + 1 : i + 1 + end_pos])
                 if outline is not None:
@@ -120,17 +127,27 @@ class IdfParser:
                         board_outlines.append(outline)
                 i = i + 1 + end_pos + 1
             elif token == ".OTHER_OUTLINE":
-                i = self._parse_outline_region(tokens, i, ".END_OTHER_OUTLINE", "other_outline", skip=4)
+                i = self._parse_outline_region(
+                    tokens, i, ".END_OTHER_OUTLINE", "other_outline", skip=4
+                )
             elif token == ".ROUTE_OUTLINE":
-                i = self._parse_outline_region(tokens, i, ".END_ROUTE_OUTLINE", "route_outline", skip=2)
+                i = self._parse_outline_region(
+                    tokens, i, ".END_ROUTE_OUTLINE", "route_outline", skip=2
+                )
             elif token == ".PLACE_OUTLINE":
-                i = self._parse_outline_region(tokens, i, ".END_PLACE_OUTLINE", "place_outline", skip=3, has_thickness=True)
+                i = self._parse_outline_region(
+                    tokens, i, ".END_PLACE_OUTLINE", "place_outline", skip=3, has_thickness=True
+                )
             elif token == ".ROUTE_KEEPOUT":
-                i = self._parse_outline_region(tokens, i, ".END_ROUTE_KEEPOUT", "route_keepout", skip=2)
+                i = self._parse_outline_region(
+                    tokens, i, ".END_ROUTE_KEEPOUT", "route_keepout", skip=2
+                )
             elif token == ".VIA_KEEPOUT":
                 i = self._parse_outline_region(tokens, i, ".END_VIA_KEEPOUT", "via_keepout", skip=1)
             elif token == ".PLACE_KEEPOUT":
-                i = self._parse_outline_region(tokens, i, ".END_PLACE_KEEPOUT", "place_keepout", skip=3, has_thickness=True)
+                i = self._parse_outline_region(
+                    tokens, i, ".END_PLACE_KEEPOUT", "place_keepout", skip=3, has_thickness=True
+                )
             elif token == ".DRILLED_HOLES":
                 end_pos = self._find_section_end(tokens[i + 1 :], ".END_DRILLED_HOLES")
                 version = self.header.idf_version if self.header else 3.0
@@ -246,7 +263,9 @@ class IdfParser:
         thickness = 0.0
         if has_thickness and len(section_tokens) > 2:
             thickness = float(section_tokens[2]) * self.ucnv
-        geometries = self._points_to_geometries(self._parse_loop_points(section_tokens[skip:]), tokens[i])
+        geometries = self._points_to_geometries(
+            self._parse_loop_points(section_tokens[skip:]), tokens[i]
+        )
         for idx, geometry in enumerate(geometries):
             self.result.regions.append(
                 MechanicalRegion(
@@ -369,7 +388,11 @@ class IdfParser:
             radius=raw.dia / 2.0,
             source_section=".DRILLED_HOLES",
         )
-        imported_as = "component" if self.hole_policy == HolePolicy.COMPONENT else "cutout"
+        imported_as = (
+            "component"
+            if self.hole_policy == HolePolicy.COMPONENT and plating != HolePlating.UNPLATED
+            else "cutout"
+        )
         self.result.holes.append(
             MechanicalHole(
                 geometry=circle,
@@ -380,18 +403,15 @@ class IdfParser:
                 imported_as=imported_as,
             )
         )
-        if imported_as == "component" or plating == HolePlating.PLATED:
-            if self.hole_policy == HolePolicy.COMPONENT:
-                self._add_component_hole(circle, plating)
-            else:
-                self.result.board_cutouts.append(circle)
+        if imported_as == "component":
+            self._add_component_hole(circle, plating)
         else:
             self.result.board_cutouts.append(circle)
         if plating == HolePlating.UNKNOWN:
             self.result.messages.append(
                 ImportMessage(
                     MessageSeverity.WARNING,
-                    text="IDF drilled hole has unknown plating and was imported as an unplated cutout.",
+                    text=f"IDF drilled hole has unknown plating and was imported as a {imported_as}.",
                     source=".DRILLED_HOLES",
                     hint="Use --hole-policy component when the hole should be electrically connectable.",
                 )
@@ -478,7 +498,9 @@ class IdfParser:
         panel_outlines: list[tuple[Geometry, list[Geometry]]],
     ) -> None:
         if board_outlines and panel_outlines:
-            self.result.warn("File contains both .BOARD_OUTLINE and .PANEL_OUTLINE; using .BOARD_OUTLINE")
+            self.result.warn(
+                "File contains both .BOARD_OUTLINE and .PANEL_OUTLINE; using .BOARD_OUTLINE"
+            )
             primary = board_outlines
         elif board_outlines:
             primary = board_outlines
@@ -511,9 +533,3 @@ def _format_from_suffix(filename: str) -> str:
     if suffix in {"emn", "idf", "idx", "bdf"}:
         return suffix
     return "idf"
-
-
-def sanitize_identifier(name: str) -> str:
-    if name and (name[0].isalpha() or name[0] == "_"):
-        return re.sub(r"[^a-zA-Z0-9_]", "_", name)
-    return "_" + re.sub(r"[^a-zA-Z0-9_]", "_", name)

@@ -44,9 +44,7 @@ def assemble_closed_paths(
     """Assemble disconnected LINE/ARC segments into closed paths."""
 
     grid_inv = round(1.0 / tolerance)
-    segments: list[PathSegment] = [
-        LinePathSegment(start=start, end=end) for start, end in lines
-    ]
+    segments: list[PathSegment] = [LinePathSegment(start=start, end=end) for start, end in lines]
     segments.extend(arcs)
 
     if not segments:
@@ -94,7 +92,11 @@ def _walk_loop(
     current_key = point_key(end_pt, grid_inv)
 
     for _ in range(len(segments)):
-        if current_key == loop_start_key and len(chain) > 1:
+        if current_key == loop_start_key and (
+            len(chain) > 1
+            or isinstance(seg, ArcPathSegment)
+            and abs(seg.end_angle - seg.start_angle) >= 360
+        ):
             return chain
 
         next_seg = _find_next(adjacency, used, current_key)
@@ -211,7 +213,10 @@ def bulge_to_arc(p1: Point, p2: Point, bulge: float) -> ArcPathSegment:
         center=center,
         radius=radius,
         start_angle=math.degrees(math.atan2(p1.y - center.y, p1.x - center.x)),
-        end_angle=math.degrees(math.atan2(p2.y - center.y, p2.x - center.x)),
+        end_angle=(
+            math.degrees(math.atan2(p1.y - center.y, p1.x - center.x))
+            + math.degrees(4 * math.atan(bulge))
+        ),
         start_point=p1,
         end_point=p2,
     )
@@ -261,7 +266,9 @@ def arc_from_chord(
     )
 
 
-def full_circle_from_diameter(start: Point, end: Point, *, layer: str = "", section: str = "") -> CircleGeometry | None:
+def full_circle_from_diameter(
+    start: Point, end: Point, *, layer: str = "", section: str = ""
+) -> CircleGeometry | None:
     """Interpret an IDF +/-360-degree loop point as a circle with a diameter chord."""
 
     diameter = math.hypot(start.x - end.x, start.y - end.y)
@@ -303,22 +310,19 @@ def geometry_bounding_box(geometry) -> tuple[Point, Point]:
 
 
 def _arc_bbox_extend(arc: ArcPathSegment, xs: list[float], ys: list[float]) -> None:
-    start = arc.start_angle % 360.0
-    end = arc.end_angle % 360.0
     for angle in [0.0, 90.0, 180.0, 270.0]:
-        if angle_in_arc(angle, start, end):
+        if angle_in_arc(angle, arc.start_angle, arc.end_angle):
             rad = math.radians(angle)
             xs.append(arc.center.x + arc.radius * math.cos(rad))
             ys.append(arc.center.y + arc.radius * math.sin(rad))
 
 
 def angle_in_arc(angle: float, start: float, end: float) -> bool:
-    angle = angle % 360.0
-    start = start % 360.0
-    end = end % 360.0
-    if start <= end:
-        return start <= angle <= end
-    return angle >= start or angle <= end
+    sweep = end - start
+    if abs(sweep) >= 360:
+        return True
+    distance = (angle - start) % 360 if sweep >= 0 else (start - angle) % 360
+    return distance <= abs(sweep) + 1e-10
 
 
 def path_area(path: ClosedPath) -> float:
@@ -328,16 +332,14 @@ def path_area(path: ClosedPath) -> float:
             area += seg.start.x * seg.end.y - seg.end.x * seg.start.y
         elif isinstance(seg, ArcPathSegment):
             area += seg.start_point.x * seg.end_point.y - seg.end_point.x * seg.start_point.y
-            area += arc_segment_area(seg)
+            area += 2 * arc_segment_area(seg)
     return area / 2.0
 
 
 def arc_segment_area(arc: ArcPathSegment) -> float:
     if arc.radius < 1e-12:
         return 0.0
-    sweep = (arc.end_angle - arc.start_angle) % 360.0
-    if sweep > 180.0:
-        sweep -= 360.0
+    sweep = arc.end_angle - arc.start_angle
     sweep_rad = math.radians(sweep)
     return arc.radius**2 * (sweep_rad - math.sin(sweep_rad)) / 2.0
 
@@ -350,7 +352,9 @@ def geometry_area(geometry) -> float:
 
 def point_in_geometry(point: Point, geometry) -> bool:
     if isinstance(geometry, CircleGeometry):
-        return math.hypot(point.x - geometry.center.x, point.y - geometry.center.y) <= geometry.radius
+        return (
+            math.hypot(point.x - geometry.center.x, point.y - geometry.center.y) <= geometry.radius
+        )
     return point_in_path(point, geometry)
 
 

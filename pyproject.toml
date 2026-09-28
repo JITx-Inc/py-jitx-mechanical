@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27,<2", "hatch-vcs>=0.5,<0.6"]
 build-backend = "hatchling.build"
 
 [project]
 name = "jitxlib-mechanical"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Mechanical import and export helpers for JITX Python projects"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -14,7 +14,8 @@ authors = [
     {name = "JITX Inc."}
 ]
 dependencies = [
-    "ezdxf>=1.4",
+    "jitx>=4.4.2,<5",
+    "ezdxf>=1.4,<2",
 ]
 keywords = ["jitx", "pcb", "eda", "dxf", "emn", "idf", "idx", "mechanical"]
 classifiers = [
@@ -30,6 +31,9 @@ classifiers = [
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.15", "pyright>=1.1", "build>=1.2", "twine>=6"]
 
+[project.entry-points.jitx-plugin]
+export = "jitxlib.mechanical.plugin"
+
 [project.scripts]
 jitx-mechanical = "jitxlib.mechanical.cli:main"
 
@@ -37,8 +41,18 @@ jitx-mechanical = "jitxlib.mechanical.cli:main"
 Source = "https://github.com/JITx-Inc/py-jitx-mechanical"
 Documentation = "https://docs.jitx.com/"
 
+[tool.hatch.build.targets.sdist]
+# Real-board test fixtures have redistribution restrictions.
+include = ["/src", "/README.md", "/LICENSE", "/pyproject.toml"]
+core-metadata-version = "2.4"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/jitxlib"]
+core-metadata-version = "2.4"
+
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0+undefined"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

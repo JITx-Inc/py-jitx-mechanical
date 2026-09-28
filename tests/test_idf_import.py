@@ -56,12 +56,15 @@ IDF_FILE 3.0 "Test System" "2024-01-01" 1 "TestBoard" "MM"
 
 
 def test_idf_drilled_holes_default_to_cutouts(tmp_path):
-    content = SIMPLE + """
+    content = (
+        SIMPLE
+        + """
 .DRILLED_HOLES
 2.0 10 10 "PTH" "VIA" "THRU" "OWNER1"
 3.0 25 15 "NPTH" "MTG" "THRU" "OWNER2"
 .END_DRILLED_HOLES
 """
+    )
     imported = import_idf(str(_write(tmp_path, content)))
     assert len(imported.holes) == 2
     assert len([g for g in imported.board_cutouts if isinstance(g, CircleGeometry)]) == 2
@@ -70,19 +73,24 @@ def test_idf_drilled_holes_default_to_cutouts(tmp_path):
 
 
 def test_idf_hole_policy_component_deduplicates(tmp_path):
-    content = SIMPLE + """
+    content = (
+        SIMPLE
+        + """
 .DRILLED_HOLES
 2.0 10 10 "PTH" "VIA" "THRU" "OWNER1"
 2.0 20 10 "PTH" "VIA" "THRU" "OWNER1"
 .END_DRILLED_HOLES
 """
+    )
     imported = import_idf(str(_write(tmp_path, content)), hole_policy=HolePolicy.COMPONENT)
     assert len(imported.mechanical_components) == 1
     assert len(imported.mechanical_components[0].placements) == 2
 
 
 def test_idf_notes_placement_keepouts_and_unknown_sections_reported(tmp_path):
-    content = SIMPLE + """
+    content = (
+        SIMPLE
+        + """
 .NOTES
 15 25 1.5 12 "KEEP OUT AREA"
 .END_NOTES
@@ -103,6 +111,7 @@ def test_idf_notes_placement_keepouts_and_unknown_sections_reported(tmp_path):
 0 1 1 0
 .END_BEND
 """
+    )
     imported = import_idf(str(_write(tmp_path, content)))
     assert len(imported.annotations) == 1
     assert len(imported.placements) == 1

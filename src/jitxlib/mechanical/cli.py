@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import argparse
 import sys
+from importlib.metadata import version
 from pathlib import Path
 
 from .codegen import generate_board_module, generate_components_module
-from .exporters.dxf import DxfExportConfig, export_dxf
 from .importers.dxf import import_dxf, read_dxf
 from .importers.idf import import_idf
 from .models import HolePolicy, MechanicalImport
@@ -17,9 +17,11 @@ from .reports import write_import_report
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="jitx-mechanical",
-        description="Import and export mechanical board geometry for JITX projects.",
+        description="Inspect mechanical drawings and generate JITX Board code.",
     )
-    parser.add_argument("--version", action="version", version="%(prog)s 0.1.0")
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {version('jitxlib-mechanical')}"
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     p_inspect = subparsers.add_parser("inspect", help="Inspect a mechanical source file.")
@@ -27,14 +29,20 @@ def main() -> None:
     p_inspect.add_argument("--format", choices=["auto", "dxf", "emn", "idf", "idx"], default="auto")
     p_inspect.set_defaults(func=_cmd_inspect)
 
-    p_import = subparsers.add_parser("import", help="Import mechanical data and generate Board code.")
+    p_import = subparsers.add_parser(
+        "import", help="Import mechanical data and generate Board code."
+    )
     p_import.add_argument("input", help="Input DXF, EMN, IDF, IDX, or BDF file.")
     p_import.add_argument("--format", choices=["auto", "dxf", "emn", "idf", "idx"], default="auto")
     p_import.add_argument("-o", "--output", help="Output Python module path.")
     p_import.add_argument("--report", help="Output report path (.md or .json).")
-    p_import.add_argument("--class-name", default="ImportedBoard", help="Generated Board class name.")
+    p_import.add_argument(
+        "--class-name", default="ImportedBoard", help="Generated Board class name."
+    )
     p_import.add_argument("--unit", choices=["mm", "in", "mil", "cm", "m"], help="Force DXF units.")
-    p_import.add_argument("--layer-map", nargs="*", metavar="LAYER=ROLE", help="Map DXF layers to roles.")
+    p_import.add_argument(
+        "--layer-map", nargs="*", metavar="LAYER=ROLE", help="Map DXF layers to roles."
+    )
     p_import.add_argument(
         "--hole-policy",
         choices=[policy.value for policy in HolePolicy],
@@ -44,19 +52,6 @@ def main() -> None:
     p_import.add_argument("--no-recenter", action="store_true", help="Keep source coordinates.")
     p_import.add_argument("--precision", type=int, default=4, help="Coordinate precision.")
     p_import.set_defaults(func=_cmd_import)
-
-    p_export = subparsers.add_parser("export-dxf", help="Export JITX XML board data to DXF.")
-    p_export.add_argument("input", help="Input JITX XML file.")
-    p_export.add_argument("-o", "--output", required=True, help="Output DXF path.")
-    p_export.add_argument("--layers", nargs="*", help="Only emit named DXF layers.")
-    p_export.add_argument("--no-board-outline", action="store_true")
-    p_export.add_argument("--no-components", action="store_true")
-    p_export.add_argument("--no-pads", action="store_true")
-    p_export.add_argument("--no-drill", action="store_true")
-    p_export.add_argument("--no-vias", action="store_true")
-    p_export.add_argument("--no-copper", action="store_true")
-    p_export.add_argument("--no-annotations", action="store_true")
-    p_export.set_defaults(func=_cmd_export_dxf)
 
     args = parser.parse_args()
     if not args.command:
@@ -76,9 +71,7 @@ def _cmd_inspect(args: argparse.Namespace) -> None:
         print(f"Units:    {inventory.units or 'not specified'}")
         if inventory.bounding_box:
             bb = inventory.bounding_box
-            print(
-                f"Extent:   {bb[1].x - bb[0].x:.3f} x {bb[1].y - bb[0].y:.3f}"
-            )
+            print(f"Extent:   {bb[1].x - bb[0].x:.3f} x {bb[1].y - bb[0].y:.3f}")
         print("Layers:")
         for layer, count in sorted(inventory.layers.items()):
             print(f"  {layer:30s} {count:5d}")
@@ -114,7 +107,7 @@ def _cmd_import(args: argparse.Namespace) -> None:
         recenter=not args.no_recenter,
         precision=args.precision,
     )
-    output_path.write_text(code)
+    output_path.write_text(code, encoding="utf-8")
     write_import_report(imported, str(report_path))
 
     components_code = generate_components_module(
@@ -126,28 +119,13 @@ def _cmd_import(args: argparse.Namespace) -> None:
     components_path: Path | None = None
     if components_code:
         components_path = output_path.with_name(f"{output_path.stem}_components.py")
-        components_path.write_text(components_code)
+        components_path.write_text(components_code, encoding="utf-8")
 
     _print_import_summary(imported, file=sys.stderr)
     print(f"  Python: {output_path}", file=sys.stderr)
     if components_path is not None:
         print(f"  Components: {components_path}", file=sys.stderr)
     print(f"  Report: {report_path}", file=sys.stderr)
-
-
-def _cmd_export_dxf(args: argparse.Namespace) -> None:
-    input_path = _existing_path(args.input)
-    config = DxfExportConfig(
-        layers=set(args.layers) if args.layers else None,
-        include_board_outline=not args.no_board_outline,
-        include_components=not args.no_components,
-        include_pads=not args.no_pads,
-        include_drill=not args.no_drill,
-        include_vias=not args.no_vias,
-        include_copper=not args.no_copper,
-        include_annotations=not args.no_annotations,
-    )
-    export_dxf(str(input_path), args.output, config=config)
 
 
 def _existing_path(path: str) -> Path:
