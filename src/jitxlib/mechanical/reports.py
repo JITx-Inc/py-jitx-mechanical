@@ -10,13 +10,18 @@ from .models import CircleGeometry, ClosedPath, MechanicalImport
 
 
 def write_import_report(imported: MechanicalImport, output_path: str) -> None:
-    """Write a Markdown or JSON report for a mechanical import."""
+    """Write the import's geometry summary and conversion messages as UTF-8 text.
+
+    ``output_path`` selects JSON with a .json suffix and Markdown otherwise.
+    Report coordinates come from ``imported`` before code-generation recentering.
+    An existing report is replaced; its parent directory must already exist.
+    """
 
     path = Path(output_path)
     if path.suffix.lower() == ".json":
-        path.write_text(json.dumps(import_to_dict(imported), indent=2) + "\n")
+        path.write_text(json.dumps(import_to_dict(imported), indent=2) + "\n", encoding="utf-8")
     else:
-        path.write_text(import_to_markdown(imported))
+        path.write_text(import_to_markdown(imported), encoding="utf-8")
 
 
 def import_to_markdown(imported: MechanicalImport) -> str:
@@ -50,7 +55,14 @@ def import_to_markdown(imported: MechanicalImport) -> str:
         lines.append("")
 
     if imported.holes:
-        lines.extend(["## Holes", "", "| Radius mm | X mm | Y mm | Plating | Imported As | Source |", "|---:|---:|---:|---|---|---|"])
+        lines.extend(
+            [
+                "## Holes",
+                "",
+                "| Radius mm | X mm | Y mm | Plating | Imported As | Source |",
+                "|---:|---:|---:|---|---|---|",
+            ]
+        )
         for hole in imported.holes:
             g = hole.geometry
             lines.append(
@@ -60,7 +72,14 @@ def import_to_markdown(imported: MechanicalImport) -> str:
         lines.append("")
 
     if imported.regions:
-        lines.extend(["## Regions", "", "| Role | Geometry | Source | Layers | Owner |", "|---|---|---|---|---|"])
+        lines.extend(
+            [
+                "## Regions",
+                "",
+                "| Role | Geometry | Source | Layers | Owner |",
+                "|---|---|---|---|---|",
+            ]
+        )
         for region in imported.regions:
             lines.append(
                 f"| {region.role} | {_geometry_name(region.geometry)} | "
@@ -69,7 +88,14 @@ def import_to_markdown(imported: MechanicalImport) -> str:
         lines.append("")
 
     if imported.annotations:
-        lines.extend(["## Annotations", "", "| Role | Text | X mm | Y mm | Source |", "|---|---|---:|---:|---|"])
+        lines.extend(
+            [
+                "## Annotations",
+                "",
+                "| Role | Text | X mm | Y mm | Source |",
+                "|---|---|---:|---:|---|",
+            ]
+        )
         for annotation in imported.annotations:
             lines.append(
                 f"| {annotation.role} | {_escape_md(annotation.text)} | "
@@ -78,7 +104,14 @@ def import_to_markdown(imported: MechanicalImport) -> str:
         lines.append("")
 
     if imported.placements:
-        lines.extend(["## Placements", "", "| Refdes | Package | X mm | Y mm | Side | Status |", "|---|---|---:|---:|---|---|"])
+        lines.extend(
+            [
+                "## Placements",
+                "",
+                "| Refdes | Package | X mm | Y mm | Side | Status |",
+                "|---|---|---:|---:|---|---|",
+            ]
+        )
         for placement in imported.placements:
             lines.append(
                 f"| {placement.refdes} | {placement.package} | {placement.pose.x:.4f} | "
@@ -87,7 +120,9 @@ def import_to_markdown(imported: MechanicalImport) -> str:
         lines.append("")
 
     if imported.unclassified:
-        lines.extend(["## Unclassified", "", "| Role | Source | Detail | Count |", "|---|---|---|---:|"])
+        lines.extend(
+            ["## Unclassified", "", "| Role | Source | Detail | Count |", "|---|---|---|---:|"]
+        )
         for obj in imported.unclassified:
             lines.append(f"| {obj.role} | {obj.source_name} | {obj.detail} | {obj.count} |")
         lines.append("")

@@ -7,20 +7,23 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from ezdxf import units
 from ezdxf.document import Drawing
+from ezdxf.enums import InsertUnits
 from ezdxf.filemanagement import readfile
 
-from jitx_mechanical.geometry import (
+from jitxlib.mechanical.geometry import (
     assemble_closed_paths,
     geometry_area,
     geometry_center,
     lwpolyline_to_closed_path,
     point_in_geometry,
 )
-from jitx_mechanical.models import (
+from jitxlib.mechanical.models import (
     ArcPathSegment,
     CircleGeometry,
     ClosedPath,
+    Geometry,
     HolePlating,
     HolePolicy,
     ImportMessage,
@@ -36,19 +39,6 @@ from jitx_mechanical.models import (
 )
 
 _logger = logging.getLogger(__name__)
-
-_INSUNITS_MAP: dict[int, str | None] = {
-    0: None,
-    1: "in",
-    2: "ft",
-    3: "mi",
-    4: "mm",
-    5: "cm",
-    6: "m",
-    8: "uin",
-    9: "um",
-    10: "yd",
-}
 
 _UNIT_TO_MM: dict[str, float] = {
     "mm": 1.0,
@@ -92,7 +82,12 @@ class DxfHatch:
 
 
 def read_dxf(dxf_path: str) -> DxfInventory:
-    """Read a DXF file and return a lightweight inventory."""
+    """Return entity counts, layers, declared units, and approximate drawing bounds.
+
+    ``dxf_path`` identifies the file to inspect. Bounds use source coordinates
+    without unit conversion and include only the entity types handled by the
+    coordinate collector; they are not the bounds of the imported Board.
+    """
 
     doc = readfile(dxf_path)
     msp = doc.modelspace()
@@ -128,7 +123,14 @@ def import_dxf(
     unit: str | None = None,
     hole_policy: HolePolicy | str = HolePolicy.CUTOUT,
 ) -> MechanicalImport:
-    """Import a DXF mechanical drawing into the shared mechanical IR."""
+    """Return board geometry in millimeters, source metadata, and conversion messages.
+
+    ``dxf_path`` identifies the source file. ``layer_map`` maps exact layer names
+    to outline, cutout, hole, keepout, soldermask, bend, height, or annotation.
+    Other layers use name heuristics. ``unit`` overrides declared units; without
+    a declaration, scale is inferred and reported. ``hole_policy`` selects Board
+    cutouts or connectable components for circular holes with unknown plating.
+    """
 
     doc = readfile(dxf_path)
     msp = doc.modelspace()
@@ -143,6 +145,7 @@ def import_dxf(
     texts: list[TextGeometry] = []
     hatches: list[DxfHatch] = []
     unclassified_types: dict[str, int] = defaultdict(int)
+    unclosed_paths: list[SourceObject] = []
 
     for entity in msp:
         etype = entity.dxftype()
@@ -160,10 +163,14 @@ def import_dxf(
             path = _parse_lwpolyline(entity, unit_scale)
             if path is not None:
                 paths.append(path)
+            else:
+                unclassified_types["open LWPOLYLINE"] += 1
         elif etype == "CIRCLE":
             circles.append(
                 CircleGeometry(
-                    center=Point(entity.dxf.center.x * unit_scale, entity.dxf.center.y * unit_scale),
+                    center=Point(
+                        entity.dxf.center.x * unit_scale, entity.dxf.center.y * unit_scale
+                    ),
                     radius=entity.dxf.radius * unit_scale,
                     source_layer=layer,
                 )
@@ -174,25 +181,34 @@ def import_dxf(
             hatch = _parse_hatch_entity(entity, unit_scale)
             if hatch is not None:
                 hatches.append(hatch)
+            else:
+                unclassified_types["HATCH boundary"] += 1
         else:
             unclassified_types[etype] += 1
 
-    for layer in set(layer_lines.keys()) | set(layer_arcs.keys()):
-        paths.extend(
-            assemble_closed_paths(
-                layer_lines.get(layer, []),
-                layer_arcs.get(layer, []),
-                source_layer=layer,
+    for layer in sorted(set(layer_lines) | set(layer_arcs)):
+        lines, arcs = layer_lines.get(layer, []), layer_arcs.get(layer, [])
+        closed = assemble_closed_paths(lines, arcs, source_layer=layer)
+        paths.extend(closed)
+        unused = len(lines) + len(arcs) - sum(len(path.segments) for path in closed)
+        if unused:
+            unclosed_paths.append(
+                SourceObject("open_path", layer, "Unclosed LINE/ARC segments", unused)
             )
-        )
 
     result = MechanicalImport(
         source_path=dxf_path,
         source_format="dxf",
         source_units=source_units,
         unit_scale=unit_scale,
+        unclassified=unclosed_paths,
     )
 
+    if unit is None and source_units is None:
+        result.warn(
+            f"DXF units are unspecified; inferred a scale of {unit_scale} to millimeters.",
+            hint="Pass --unit to specify the source drawing units.",
+        )
     _classify_into_import(result, paths, circles, texts, hatches, layer_map, hole_policy)
     for etype, count in sorted(unclassified_types.items()):
         result.unclassified.append(SourceObject("unsupported_dxf_entity", etype, count=count))
@@ -208,8 +224,8 @@ def _classify_into_import(
     layer_map: dict[str, str] | None,
     hole_policy: HolePolicy,
 ) -> None:
-    outline_candidates: list[ClosedPath] = []
-    unresolved_paths: list[ClosedPath] = []
+    outline_candidates: list[Geometry] = []
+    unresolved_paths: list[Geometry] = []
     unresolved_circles: list[CircleGeometry] = []
 
     for path in paths:
@@ -219,29 +235,46 @@ def _classify_into_import(
         elif role in ("cutout", "hole"):
             result.board_cutouts.append(path)
         elif role in ("keepout", "soldermask", "bend", "height"):
-            result.regions.append(MechanicalRegion(role=role, geometry=path, source_name=path.source_layer))
+            result.regions.append(
+                MechanicalRegion(role=role, geometry=path, source_name=path.source_layer)
+            )
         elif role == "annotation":
-            result.regions.append(MechanicalRegion(role="annotation_region", geometry=path, source_name=path.source_layer))
+            result.regions.append(
+                MechanicalRegion(
+                    role="annotation_region", geometry=path, source_name=path.source_layer
+                )
+            )
         else:
             unresolved_paths.append(path)
 
     for circle in circles:
         role = _mapped_role(circle.source_layer, layer_map)
         if role == "outline":
-            result.unclassified.append(
-                SourceObject("circle_outline_candidate", circle.source_layer, "Circle cannot be a board outline unless explicitly handled")
-            )
+            outline_candidates.append(circle)
         elif role in ("hole", "cutout"):
             _add_hole(result, circle, HolePlating.UNKNOWN, hole_policy, source=circle.source_layer)
         elif role in ("keepout", "soldermask", "bend", "height"):
-            result.regions.append(MechanicalRegion(role=role, geometry=circle, source_name=circle.source_layer))
+            result.regions.append(
+                MechanicalRegion(role=role, geometry=circle, source_name=circle.source_layer)
+            )
+        elif role == "annotation":
+            result.regions.append(
+                MechanicalRegion(
+                    role="annotation_region", geometry=circle, source_name=circle.source_layer
+                )
+            )
         else:
             unresolved_circles.append(circle)
 
     if outline_candidates:
         result.board_outline = max(outline_candidates, key=lambda path: abs(geometry_area(path)))
+        unresolved_paths.extend(
+            path for path in outline_candidates if path is not result.board_outline
+        )
     elif unresolved_paths:
-        largest_idx = max(range(len(unresolved_paths)), key=lambda i: abs(geometry_area(unresolved_paths[i])))
+        largest_idx = max(
+            range(len(unresolved_paths)), key=lambda i: abs(geometry_area(unresolved_paths[i]))
+        )
         result.board_outline = unresolved_paths.pop(largest_idx)
 
     if result.board_outline is not None:
@@ -249,17 +282,27 @@ def _classify_into_import(
             if point_in_geometry(geometry_center(path), result.board_outline):
                 result.board_cutouts.append(path)
             else:
-                result.unclassified.append(SourceObject("path", path.source_layer, "outside board outline"))
+                result.unclassified.append(
+                    SourceObject("path", path.source_layer, "outside board outline")
+                )
         for circle in unresolved_circles:
             if point_in_geometry(circle.center, result.board_outline):
-                _add_hole(result, circle, HolePlating.UNKNOWN, hole_policy, source=circle.source_layer)
+                _add_hole(
+                    result, circle, HolePlating.UNKNOWN, hole_policy, source=circle.source_layer
+                )
             else:
-                result.unclassified.append(SourceObject("circle", circle.source_layer, "outside board outline"))
+                result.unclassified.append(
+                    SourceObject("circle", circle.source_layer, "outside board outline")
+                )
     else:
         for path in unresolved_paths:
-            result.unclassified.append(SourceObject("path", path.source_layer, "no board outline detected"))
+            result.unclassified.append(
+                SourceObject("path", path.source_layer, "no board outline detected")
+            )
         for circle in unresolved_circles:
-            result.unclassified.append(SourceObject("circle", circle.source_layer, "no board outline detected"))
+            result.unclassified.append(
+                SourceObject("circle", circle.source_layer, "no board outline detected")
+            )
 
     for text in texts:
         result.annotations.append(
@@ -295,7 +338,11 @@ def _add_hole(
     owner: str = "",
 ) -> None:
     ambiguous = plating == HolePlating.UNKNOWN
-    imported_as = "component" if hole_policy == HolePolicy.COMPONENT else "cutout"
+    imported_as = (
+        "component"
+        if hole_policy == HolePolicy.COMPONENT and plating != HolePlating.UNPLATED
+        else "cutout"
+    )
     result.holes.append(
         MechanicalHole(
             geometry=circle,
@@ -316,7 +363,7 @@ def _add_hole(
         result.messages.append(
             ImportMessage(
                 MessageSeverity.WARNING,
-                text="Circular interior geometry has unknown plating and was imported as an unplated cutout.",
+                text=f"Circular interior geometry has unknown plating and was imported as a {imported_as}.",
                 source=source,
                 hint="Use --hole-policy component when these holes should be electrically connectable single-pin components.",
             )
@@ -344,7 +391,9 @@ def _add_component_hole(
     result.mechanical_components.append(
         MechanicalComponent(
             name=f"MechanicalHole_{len(result.mechanical_components) + 1}",
-            geometry=CircleGeometry(center=Point(0.0, 0.0), radius=circle.radius, source_layer=source),
+            geometry=CircleGeometry(
+                center=Point(0.0, 0.0), radius=circle.radius, source_layer=source
+            ),
             placements=(circle.center,),
             plating=plating,
             source=source,
@@ -360,45 +409,47 @@ def _mapped_role(layer_name: str, layer_map: dict[str, str] | None) -> str | Non
 
 def _classify_layer(layer_name: str) -> str | None:
     lower = layer_name.lower()
-    for role, patterns in _LAYER_PATTERNS.items():
-        if any(pattern in lower for pattern in patterns):
-            return role
-    return None
+    matches = [
+        (len(pattern), role)
+        for role, patterns in _LAYER_PATTERNS.items()
+        for pattern in patterns
+        if pattern in lower
+    ]
+    return max(matches)[1] if matches else None
 
 
 def _detect_units(doc: Drawing) -> str | None:
-    try:
-        insunits = doc.header.get("$INSUNITS", 0)
-        return _INSUNITS_MAP.get(insunits)
-    except Exception as exc:
-        _logger.warning("Could not read $INSUNITS from DXF header: %s", exc)
+    code = int(doc.header.get("$INSUNITS", 0))
+    if not code:
         return None
+    try:
+        return units.decode(code) or units.unit_name(code)
+    except IndexError as exc:
+        raise ValueError(f"Unsupported DXF unit code {code}; pass --unit") from exc
 
 
 def _resolve_unit_scale(doc: Drawing, forced_unit: str | None, msp) -> float:
     if forced_unit:
         if forced_unit not in _UNIT_TO_MM:
-            msg = f"Invalid unit {forced_unit!r}; expected one of {sorted(_UNIT_TO_MM)}"
-            raise ValueError(msg)
+            raise ValueError(f"Invalid unit {forced_unit!r}; expected one of {sorted(_UNIT_TO_MM)}")
         return _UNIT_TO_MM[forced_unit]
+
+    code = int(doc.header.get("$INSUNITS", 0))
+    if code:
+        decoded = _detect_units(doc)
+        if decoded in _UNIT_TO_MM:
+            return _UNIT_TO_MM[decoded]
+        try:
+            return units.conversion_factor(InsertUnits(code), InsertUnits.Millimeters)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Unsupported DXF unit code {code}; pass --unit") from exc
 
     xs: list[float] = []
     ys: list[float] = []
     for entity in msp:
         _collect_entity_coords(entity, xs, ys)
-
     raw_extent = max(max(xs) - min(xs), max(ys) - min(ys)) if xs and ys else 0.0
-    detected = _detect_units(doc)
-    if detected and detected in _UNIT_TO_MM:
-        scale = _UNIT_TO_MM[detected]
-        if raw_extent * scale <= 5000:
-            return scale
-
-    if raw_extent == 0:
-        return 1.0
-    if raw_extent > 500:
-        return _UNIT_TO_MM["mil"]
-    return 1.0
+    return _UNIT_TO_MM["mil"] if raw_extent > 500 else 1.0
 
 
 def _collect_entity_coords(entity, xs: list[float], ys: list[float]) -> None:
@@ -434,7 +485,7 @@ def _parse_arc_entity(entity, unit_scale: float) -> ArcPathSegment:
     cy = entity.dxf.center.y * unit_scale
     radius = entity.dxf.radius * unit_scale
     start_angle = entity.dxf.start_angle
-    end_angle = entity.dxf.end_angle
+    end_angle = start_angle + (entity.dxf.end_angle - start_angle) % 360
     return ArcPathSegment(
         center=Point(cx, cy),
         radius=radius,
@@ -465,7 +516,7 @@ def _parse_text_entity(entity, unit_scale: float) -> TextGeometry:
         content = entity.text
         pos = entity.dxf.insert
         height = entity.dxf.char_height
-        rotation = getattr(entity.dxf, "rotation", 0.0)
+        rotation = entity.get_rotation()
     else:
         content = entity.dxf.text
         pos = entity.dxf.insert
@@ -482,7 +533,7 @@ def _parse_text_entity(entity, unit_scale: float) -> TextGeometry:
 
 def _parse_hatch_entity(entity, unit_scale: float) -> DxfHatch | None:
     try:
-        is_solid = entity.dxf.hatch_style == 0 or entity.dxf.pattern_name == "SOLID"
+        is_solid = bool(entity.dxf.solid_fill)
     except Exception:
         is_solid = False
 
@@ -494,9 +545,7 @@ def _parse_hatch_entity(entity, unit_scale: float) -> DxfHatch | None:
                 if len(verts) >= 3:
                     pts = [(v[0] * unit_scale, v[1] * unit_scale) for v in verts]
                     bulges = [v[2] if len(v) > 2 else 0.0 for v in verts]
-                    boundary_paths.append(
-                        lwpolyline_to_closed_path(pts, bulges, entity.dxf.layer)
-                    )
+                    boundary_paths.append(lwpolyline_to_closed_path(pts, bulges, entity.dxf.layer))
             elif hasattr(bpath, "edges"):
                 lines = []
                 arcs = []
@@ -512,8 +561,9 @@ def _parse_hatch_entity(entity, unit_scale: float) -> DxfHatch | None:
                         cx = edge.center[0] * unit_scale
                         cy = edge.center[1] * unit_scale
                         radius = edge.radius * unit_scale
-                        start_angle = edge.start_angle
-                        end_angle = edge.end_angle
+                        sweep = (edge.end_angle - edge.start_angle) % 360 or 360
+                        start_angle = edge.start_angle if edge.ccw else edge.end_angle
+                        end_angle = start_angle + (sweep if edge.ccw else -sweep)
                         arcs.append(
                             ArcPathSegment(
                                 center=Point(cx, cy),
@@ -530,7 +580,9 @@ def _parse_hatch_entity(entity, unit_scale: float) -> DxfHatch | None:
                                 ),
                             )
                         )
-                boundary_paths.extend(assemble_closed_paths(lines, arcs, source_layer=entity.dxf.layer))
+                boundary_paths.extend(
+                    assemble_closed_paths(lines, arcs, source_layer=entity.dxf.layer)
+                )
     except Exception as exc:
         _logger.warning("Failed to parse HATCH boundary on layer %r: %s", entity.dxf.layer, exc)
         return None
