@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from jitx_mechanical.importers.idf import import_idf
-from jitx_mechanical.models import CircleGeometry, ClosedPath, MechanicalImport
+from jitxlib.mechanical.importers.idf import import_idf
+from jitxlib.mechanical.models import CircleGeometry, ClosedPath, MechanicalImport
 
 REAL_EMN_DIR = Path(__file__).parent / "fixtures" / "emn"
 ALL_EMN_FILES = sorted(REAL_EMN_DIR.glob("*.emn")) if REAL_EMN_DIR.exists() else []

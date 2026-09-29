@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import keyword
 import math
 import re
 
@@ -20,9 +21,6 @@ from .models import (
 )
 
 _KEEPOUT_ROLES = frozenset({"route_keepout", "via_keepout"})
-_CUSTOM_REGION_ROLES = frozenset(
-    {"place_keepout", "place_outline", "route_outline", "other_outline"}
-)
 _DEFAULT_ANNOTATION_HEIGHT_MM = 1.0
 _CUSTOM_NAME_BY_ROLE = {
     "place_keepout": "PlaceKeepout",
@@ -46,31 +44,38 @@ def generate_board_module(
     recenter: bool = True,
     precision: int = DEFAULT_PRECISION,
 ) -> str:
-    """Generate a Board-focused Python module from mechanical import data."""
+    """Return Python source for a Board with attached cutouts and drawing features.
 
+    ``imported`` must contain an outline in millimeters. ``class_name`` is
+    converted to a valid Python identifier; ``module_name`` identifies the source
+    in the module's description. Recentering moves the outline's bounding-box
+    center to the origin and applies the same offset to every attached feature.
+    ``precision`` controls decimal places and must be between 0 and 12.
+    """
+
+    if imported.board_outline is None:
+        raise ValueError(
+            "No board outline detected; select an outline layer before generating code"
+        )
+    _validate_precision(precision)
     clean_class = sanitize_identifier(class_name)
     offset = _recenter_offset(imported.board_outline, recenter)
     imports = _imports(imported)
     lines: list[str] = []
 
     source = module_name or imported.source_path
-    lines.append(f'"""Board geometry imported from {source}."""')
+    lines.append(repr(f"Board geometry imported from {source}."))
     lines.append("")
     lines.extend(imports)
     lines.append("")
     lines.append("")
     lines.append(f"class {clean_class}(Board):")
-    if imported.board_outline is None:
-        lines.append("    shape = None  # No board outline was detected; fill this in manually.")
-    else:
-        lines.append(
-            "    shape = "
-            + geometry_to_code(imported.board_outline, offset=offset, indent=1, precision=precision)
-        )
-
-    init_lines = _emit_board_init_features(
-        imported, offset=offset, precision=precision
+    lines.append(
+        "    shape = "
+        + geometry_to_code(imported.board_outline, offset=offset, indent=1, precision=precision)
     )
+
+    init_lines = _emit_board_init_features(imported, offset=offset, precision=precision)
     if init_lines:
         lines.append("")
         lines.append("    def __init__(self):")
@@ -79,28 +84,10 @@ def generate_board_module(
 
     lines.append("")
     lines.append("")
-    lines.append("# Interior board cutout geometry imported from the source file.")
-    lines.append("# Attach these shapes to your board or circuit according to your JITX workflow.")
-    lines.append("BOARD_CUTOUTS = [")
-    for cutout in imported.board_cutouts:
-        lines.append(
-            "    "
-            + geometry_to_code(cutout, offset=offset, indent=1, precision=precision)
-            + ","
-        )
-    lines.append("]")
-
-    lines.append("")
     if imported.mechanical_components:
-        lines.append(
-            "# Mechanical/plated holes are emitted as connectable JITX Component"
-        )
-        lines.append(
-            "# classes in the companion `_components.py` module — instantiate"
-        )
-        lines.append(
-            "# `MechanicalComponentsCircuit` there and net its ports into your design."
-        )
+        lines.append("# Mechanical/plated holes are emitted as connectable JITX Component")
+        lines.append("# classes in the companion `_components.py` module — instantiate")
+        lines.append("# `MechanicalComponentsCircuit` there and net its ports into your design.")
     else:
         lines.append("MECHANICAL_COMPONENTS = []")
 
@@ -110,12 +97,15 @@ def generate_board_module(
         for message in imported.messages:
             lines.append(
                 "    "
-                + "{"
-                + f'"severity": "{message.severity.value}", '
-                + f'"message": "{_escape(message.text)}", '
-                + f'"source": "{_escape(message.source)}", '
-                + f'"hint": "{_escape(message.hint)}"'
-                + "},"
+                + repr(
+                    {
+                        "severity": message.severity.value,
+                        "message": message.text,
+                        "source": message.source,
+                        "hint": message.hint,
+                    }
+                )
+                + ","
             )
         lines.append("]")
 
@@ -154,11 +144,15 @@ def _imports(imported: MechanicalImport) -> list[str]:
         for geometry in geometries
     )
     needs_circle = any(isinstance(geometry, CircleGeometry) for geometry in geometries)
-    needs_polygon = any(isinstance(geometry, ClosedPath) for geometry in geometries)
+    needs_polygon = any(
+        isinstance(geometry, ClosedPath)
+        and not any(isinstance(seg, ArcPathSegment) for seg in geometry.segments)
+        for geometry in geometries
+    )
     needs_text = bool(imported.annotations)
 
     keepout_regions = [r for r in imported.regions if r.role in _KEEPOUT_ROLES]
-    custom_regions = [r for r in imported.regions if r.role in _CUSTOM_REGION_ROLES]
+    custom_regions = [r for r in imported.regions if r.role not in _KEEPOUT_ROLES]
     needs_keepout = bool(keepout_regions)
     needs_custom = bool(custom_regions) or needs_text
     needs_layerset = needs_keepout
@@ -174,6 +168,8 @@ def _imports(imported: MechanicalImport) -> list[str]:
         shape_imports.append("Text")
 
     feature_imports: list[str] = []
+    if imported.board_cutouts:
+        feature_imports.append("Cutout")
     if needs_keepout:
         feature_imports.append("KeepOut")
     if needs_custom:
@@ -195,34 +191,22 @@ def _emit_board_init_features(
     offset: Point,
     precision: int,
 ) -> list[str]:
-    """Yield indented body lines for Board.__init__, one feature assignment per role+index.
-
-    Returns an empty list when there are no regions or annotations — the caller
-    omits the `def __init__` block entirely in that case.
-    """
-    regions = list(imported.regions)
-    annotations = list(imported.annotations)
-    if not regions and not annotations:
-        return []
-
+    """Generate cutouts, regions, and annotations attached to the Board."""
+    regions = imported.regions
+    annotations = imported.annotations
     body: list[str] = []
-    role_counter: dict[str, int] = {}
-
-    for region in regions:
-        idx = role_counter.get(region.role, 0)
-        role_counter[region.role] = idx + 1
-        attr = f"{region.role}_{idx}"
-        body.extend(
-            _region_feature_lines(region, attr, offset=offset, precision=precision)
-        )
+    for idx, cutout in enumerate(imported.board_cutouts):
+        shape = geometry_to_code(cutout, offset=offset, indent=2, precision=precision)
+        body.append(f"        self.cutout_{idx} = Cutout({shape})")
+    for idx, region in enumerate(regions):
+        attr = "region_" + sanitize_identifier(f"{region.role}_{idx}")
+        body.extend(_region_feature_lines(region, attr, offset=offset, precision=precision))
 
     note_idx = 0
     for annotation in annotations:
         attr = f"note_{note_idx}"
         note_idx += 1
-        body.extend(
-            _annotation_feature_lines(annotation, attr, offset=offset, precision=precision)
-        )
+        body.extend(_annotation_feature_lines(annotation, attr, offset=offset, precision=precision))
 
     return body
 
@@ -234,9 +218,7 @@ def _region_feature_lines(
     offset: Point,
     precision: int,
 ) -> list[str]:
-    shape_code = geometry_to_code(
-        region.geometry, offset=offset, indent=2, precision=precision
-    )
+    shape_code = geometry_to_code(region.geometry, offset=offset, indent=2, precision=precision)
     if region.role in _KEEPOUT_ROLES:
         kind_kwarg = "route=True" if region.role == "route_keepout" else "via=True"
         layer_code = _layer_string_to_layerset(region.layers)
@@ -249,7 +231,7 @@ def _region_feature_lines(
         ]
     name = _CUSTOM_NAME_BY_ROLE.get(region.role, _to_pascal(region.role))
     return [
-        f'        self.{attr} = Custom({shape_code}, name="{_escape(name)}")',
+        f"        self.{attr} = Custom({shape_code}, name={name!r})",
     ]
 
 
@@ -260,14 +242,15 @@ def _annotation_feature_lines(
     offset: Point,
     precision: int,
 ) -> list[str]:
-    text = _escape(annotation.text)
+    text = repr(annotation.text)
     height = annotation.height if annotation.height > 0 else _DEFAULT_ANNOTATION_HEIGHT_MM
     height_code = _fmt(height, precision=precision)
     x = _fmt(annotation.position.x + offset.x, precision=precision)
     y = _fmt(annotation.position.y + offset.y, precision=precision)
+    rotation = _fmt(annotation.rotation, precision=precision)
     return [
-        f'        self.{attr} = Custom('
-        f'Text("{text}", {height_code}).at({x}, {y}), name="Note")'
+        f"        self.{attr} = Custom("
+        f'Text({text}, {height_code}).at({x}, {y}, rotate={rotation}), name="Note")'
     ]
 
 
@@ -379,6 +362,8 @@ def _recenter_offset(geometry: Geometry | None, recenter: bool) -> Point:
 
 
 def _fmt(value: float, *, precision: int = DEFAULT_PRECISION) -> str:
+    if not math.isfinite(value):
+        raise ValueError("Generated geometry requires finite coordinates and dimensions")
     if abs(value) < 10 ** (-(precision + 1)):
         return "0.0"
     rounded = round(value, precision)
@@ -394,14 +379,18 @@ def _wrap_angle(angle: float) -> float:
     return wrapped
 
 
-def _escape(text: str) -> str:
-    return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
-
-
 def sanitize_identifier(name: str) -> str:
-    if name and (name[0].isalpha() or name[0] == "_"):
-        return re.sub(r"[^a-zA-Z0-9_]", "_", name)
-    return "_" + re.sub(r"[^a-zA-Z0-9_]", "_", name)
+    cleaned = re.sub(r"[^a-zA-Z0-9_]", "_", name) or "ImportedBoard"
+    if cleaned[0].isdigit():
+        cleaned = "_" + cleaned
+    if keyword.iskeyword(cleaned):
+        cleaned += "_"
+    return cleaned
+
+
+def _validate_precision(precision: int) -> None:
+    if not 0 <= precision <= 12:
+        raise ValueError("precision must be between 0 and 12 decimal places")
 
 
 def generate_components_module(
@@ -412,11 +401,18 @@ def generate_components_module(
     precision: int = DEFAULT_PRECISION,
     annular_pad_margin: float = DEFAULT_ANNULAR_PAD_MARGIN_MM,
 ) -> str:
-    """Generate a JITX Component + Circuit module for plated/mounting holes.
+    """Return Python source for the import's connectable holes and their Circuit.
 
-    Returns the empty string when the import has no mechanical components,
-    so callers can guard with `if code:` to decide whether to write the file.
+    An import with no mechanical components produces an empty string.
+    ``module_name`` identifies the source in the module's description.
+    ``recenter`` and ``precision`` must match the corresponding Board generation
+    call so both modules share an origin and coordinate precision.
+    ``annular_pad_margin`` is the positive radial copper and soldermask extension
+    beyond each hole, in millimeters; it is not a fabrication rule from the source.
     """
+    _validate_precision(precision)
+    if not math.isfinite(annular_pad_margin) or annular_pad_margin <= 0:
+        raise ValueError("annular_pad_margin must be a positive finite length")
     components = imported.mechanical_components
     if not components:
         return ""
@@ -425,16 +421,10 @@ def generate_components_module(
     source = module_name or imported.source_path
 
     header = [
-        f'"""Mechanical components (plated and mounting holes) imported from {source}.',
+        repr(f"Mechanical components imported from {source}."),
         "",
-        "Each unique hole geometry becomes a single-pin Component class with a",
-        "through-hole pad. `MechanicalComponentsCircuit` instantiates them at the",
-        "placements detected in the source file.",
-        "",
-        "NOTE: the source file only carries hole diameters. Annular ring and",
-        f"soldermask diameters are assumed at `hole_diameter + 2 * {annular_pad_margin} mm`.",
-        "Edit the Pad subclasses below if your fab requires different copper.",
-        '"""',
+        f"# Copper and soldermask extend {annular_pad_margin} mm beyond each hole edge.",
+        "# Adjust the pad shapes to meet your fabrication requirements.",
         "",
         "from jitx.circuit import Circuit",
         "from jitx.component import Component",
@@ -466,7 +456,7 @@ def generate_components_module(
         body.append("")
 
     body.append("class MechanicalComponentsCircuit(Circuit):")
-    body.append('    """All imported mechanical/plated holes placed at their source coordinates.')
+    body.append('    """Imported mechanical holes placed in the same frame as the generated Board.')
     body.append("")
     body.append("    Net the exposed ports into your design — for example, connect every")
     body.append("    PLATED hole's `.p1` to a chassis-ground net at the Design level.")
@@ -474,8 +464,6 @@ def generate_components_module(
     body.append("")
     body.append("    def __init__(self):")
     body.append("        super().__init__()")
-    if not class_names:
-        body.append("        pass")
     for component, class_name in class_names:
         attr = _placement_attr_name(class_name)
         instances = [
@@ -495,6 +483,8 @@ def generate_components_module(
 
 
 def _component_class_name(component: MechanicalComponent, *, precision: int) -> str:
+    if not math.isfinite(component.geometry.radius) or component.geometry.radius <= 0:
+        raise ValueError("Mechanical hole radius must be finite and positive")
     diameter_mm = _fmt(component.geometry.radius * 2.0, precision=precision)
     plating = component.plating.value.upper() if component.plating else "UNKNOWN"
     safe_dia = diameter_mm.replace(".", "p")
@@ -527,7 +517,7 @@ def _component_class_lines(
         "",
         f"class {lp_cls}(Landpattern):",
         "    def __init__(self):",
-        f"        self.p1 = {pad_cls}()",
+        f"        self.p1 = {pad_cls}().at(0, 0)",
         "",
         f"class {class_name}(Component):",
         f'    """Single-pin through-hole Component (hole diameter {hole_str} mm, plating: {plating_label})."""',

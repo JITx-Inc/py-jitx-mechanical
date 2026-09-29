@@ -5,11 +5,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from jitx_mechanical.codegen import generate_board_module, generate_components_module
-from jitx_mechanical.importers.dxf import import_dxf
-from jitx_mechanical.importers.idf import import_idf
-from jitx_mechanical.models import HolePolicy
-from jitx_mechanical.reports import import_to_markdown, write_import_report
+from jitxlib.mechanical.codegen import generate_board_module, generate_components_module
+from jitxlib.mechanical.importers.dxf import import_dxf
+from jitxlib.mechanical.importers.idf import import_idf
+from jitxlib.mechanical.models import HolePolicy
+from jitxlib.mechanical.reports import import_to_markdown, write_import_report
 
 FIXTURES = Path(__file__).parent / "fixtures" / "dxf"
 EMN_FIXTURES = Path(__file__).parent / "fixtures" / "emn"
@@ -22,7 +22,8 @@ def test_codegen_board_only_no_design_or_circuit():
     assert "class HawkBoard(Board):" in code
     assert "class HawkCircuit" not in code
     assert "class HawkDesign" not in code
-    assert "BOARD_CUTOUTS" in code
+    assert "self.cutout_0 = Cutout(" in code
+    assert "BOARD_CUTOUTS" not in code
 
 
 def test_report_includes_messages_and_regions(tmp_path):
@@ -51,7 +52,8 @@ def test_codegen_from_emn_fixture():
     code = generate_board_module(imported, class_name="SquareCutBoard")
     ast.parse(code)
     assert "class SquareCutBoard(Board):" in code
-    assert "BOARD_CUTOUTS" in code
+    assert "self.cutout_0 = Cutout(" in code
+    assert "BOARD_CUTOUTS" not in code
     assert "from jitx.board import Board" in code
 
 
@@ -63,7 +65,7 @@ def test_cli_import_emn_end_to_end(tmp_path):
         [
             sys.executable,
             "-m",
-            "jitx_mechanical.cli",
+            "jitxlib.mechanical.cli",
             "import",
             str(EMN_FIXTURES / "squarecut.emn"),
             "-o",
@@ -95,9 +97,7 @@ def test_components_module_empty_when_policy_cutout():
 
 def test_components_module_emits_real_component_classes():
     """--hole-policy component produces Component classes with through-hole pads."""
-    imported = import_idf(
-        str(EMN_FIXTURES / "352a900-1.emn"), hole_policy=HolePolicy.COMPONENT
-    )
+    imported = import_idf(str(EMN_FIXTURES / "353A814.emn"), hole_policy=HolePolicy.COMPONENT)
     assert imported.mechanical_components, "expected mechanical components in this fixture"
 
     code = generate_components_module(imported)
@@ -130,9 +130,7 @@ def test_components_module_emits_real_component_classes():
 
 def test_board_module_points_to_companion_when_components_present():
     """When components are detected the Board file references the companion module."""
-    imported = import_idf(
-        str(EMN_FIXTURES / "352a900-1.emn"), hole_policy=HolePolicy.COMPONENT
-    )
+    imported = import_idf(str(EMN_FIXTURES / "353A814.emn"), hole_policy=HolePolicy.COMPONENT)
     code = generate_board_module(imported, class_name="MyBoard")
     ast.parse(code)
     assert "_components.py" in code
@@ -148,9 +146,9 @@ def test_cli_emits_components_file_with_component_policy(tmp_path):
         [
             sys.executable,
             "-m",
-            "jitx_mechanical.cli",
+            "jitxlib.mechanical.cli",
             "import",
-            str(EMN_FIXTURES / "352a900-1.emn"),
+            str(EMN_FIXTURES / "353A814.emn"),
             "-o",
             str(output),
             "--class-name",
@@ -180,7 +178,7 @@ def test_cli_skips_components_file_with_cutout_policy(tmp_path):
         [
             sys.executable,
             "-m",
-            "jitx_mechanical.cli",
+            "jitxlib.mechanical.cli",
             "import",
             str(EMN_FIXTURES / "352a900-1.emn"),
             "-o",
@@ -204,12 +202,12 @@ def test_board_features_from_regions_and_notes(tmp_path):
     code = generate_board_module(imported, class_name="M900Board")
     ast.parse(code)
 
-    assert "from jitx.feature import Custom" in code
+    assert "Custom" in code
     assert "    def __init__(self):" in code
     assert "        super().__init__()" in code
     # 352a900 has place_keepouts and notes (no route/via keepouts).
-    assert 'Custom(' in code
-    assert 'name="PlaceKeepout"' in code
+    assert "Custom(" in code
+    assert "PlaceKeepout" in code
     assert 'name="Note"' in code
     assert "Text(" in code
     # No KeepOut on this fixture (no route/via keepouts) → no LayerSet import either.
@@ -223,7 +221,7 @@ def test_board_features_route_and_via_keepouts():
     code = generate_board_module(imported, class_name="BigBoard")
     ast.parse(code)
 
-    assert "from jitx.feature import KeepOut, Custom" in code
+    assert "KeepOut, Custom" in code
     assert "from jitx.layerindex import LayerSet" in code
 
     # 353A814: 2521 route_keepout + 126 via_keepout = 2647 KeepOut features total.
@@ -238,6 +236,7 @@ def test_board_features_omitted_when_no_regions_or_notes():
     imported = import_idf(str(EMN_FIXTURES / "squarecut.emn"))
     assert not imported.regions
     assert not imported.annotations
+    imported.board_cutouts.clear()
 
     code = generate_board_module(imported, class_name="SquareCutBoard")
     ast.parse(code)
@@ -248,7 +247,7 @@ def test_board_features_omitted_when_no_regions_or_notes():
 
 def test_layer_string_mapping():
     """EMN side tokens map to the right LayerSet expression."""
-    from jitx_mechanical.codegen import _layer_string_to_layerset
+    from jitxlib.mechanical.codegen import _layer_string_to_layerset
 
     assert _layer_string_to_layerset("TOP") == "LayerSet(0)"
     assert _layer_string_to_layerset("Top") == "LayerSet(0)"  # case-insensitive
@@ -265,7 +264,7 @@ def test_cli_inspect_emn(tmp_path):
         [
             sys.executable,
             "-m",
-            "jitx_mechanical.cli",
+            "jitxlib.mechanical.cli",
             "inspect",
             str(EMN_FIXTURES / "352a900-1.emn"),
         ],
