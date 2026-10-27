@@ -4,7 +4,7 @@ import jitx.run
 import pytest
 from jitx._instantiation import instantiation
 from jitx.run import RuntimeDesign
-from jitx.run.runtime import _instantiate_design, _package_design
+from jitx.run.runtime import _DesignState, _instantiate_design, _package_design
 
 jitx.run.autodetect_design = False
 
@@ -18,6 +18,6 @@ def design_context():
         with instantiation.activate(), instantiation.frame():
             root = _instantiate_design(cls)
             package, mapper = _package_design(root)
-            yield RuntimeDesign(root, cls.__name__, mapper), package
+            yield RuntimeDesign(_DesignState(root, mapper), cls.__name__), package
 
     return build
