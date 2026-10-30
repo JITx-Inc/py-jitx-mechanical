@@ -1,4 +1,4 @@
-"""Live capture gate; run explicitly against a stable JITX runtime."""
+"""Live capture gate; run explicitly against a running JITX 4.6 runtime."""
 
 import os
 

@@ -105,4 +105,5 @@ python -m twine check dist/*
 The normal suite translates designs without launching JITX. The runtime capture
 test is opt-in: set `JITX_MECHANICAL_RUNTIME_URI` to a running 4.6 runtime's
 websocket URI and run `pytest tests/test_runtime_capture.py -q`. `jitx runtime start
---bg` prints the URI.
+--bg` prints the URI. The [4.6 validation record](docs/validation-4.6.md) lists
+the tested versions and the remaining release gates.
