@@ -14,8 +14,8 @@ authors = [
     {name = "JITX Inc."}
 ]
 dependencies = [
-    "jitx>=4.6.0rc4,<4.7",
-    "jitxcore>=4.6.0rc2,<4.7",
+    "jitx>=4.6.0rc10,<4.7",
+    "jitxcore>=4.6.0rc3,<4.7",
     "ezdxf>=1.4,<2",
 ]
 keywords = ["jitx", "pcb", "eda", "dxf", "emn", "idf", "idx", "mechanical"]
