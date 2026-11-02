@@ -4,7 +4,7 @@ import math
 
 import ezdxf
 import pytest
-from synthetic import write_dxf
+from synthetic import write_dxf, write_headerless_dxf
 
 from jitxlib.mechanical.importers.dxf import import_dxf, read_dxf
 from jitxlib.mechanical.models import ArcPathSegment, CircleGeometry, HolePolicy, Point
@@ -280,3 +280,12 @@ def test_entities_outside_the_xy_plane_are_reported(tmp_path):
     imported = import_dxf(str(source))
     assert not imported.holes
     assert any(o.source_name == "CIRCLE outside the XY plane" for o in imported.unclassified)
+
+
+def test_headerless_drawings_are_treated_as_unitless(tmp_path):
+    source = write_headerless_dxf(tmp_path / "headerless.dxf")
+    assert read_dxf(str(source)).units is None
+    imported = import_dxf(str(source))
+    assert imported.source_units is None
+    assert imported.unit_scale == 1.0
+    assert any("units are unspecified" in message.text for message in imported.messages)

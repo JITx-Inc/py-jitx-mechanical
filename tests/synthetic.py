@@ -117,3 +117,26 @@ def write_dxf(
         msp.add_circle((x, y), radius, dxfattribs={"layer": circle_layer})
     doc.saveas(path)
     return path
+
+
+def write_headerless_dxf(path: Path, outline: Rect = (0, 0, 40, 20)) -> Path:
+    """Write a DXF with only an ENTITIES section, as minimal exporters do.
+
+    Without a HEADER section the file cannot declare units, and ezdxf reads it as R12.
+
+    Args:
+        path: Destination file.
+        outline: Board outline rectangle as (x0, y0, x1, y1), drawn with LINE entities.
+
+    Returns:
+        The written path.
+    """
+    x0, y0, x1, y1 = outline
+    corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    lines = ["0", "SECTION", "2", "ENTITIES"]
+    for (ax, ay), (bx, by) in zip(corners, corners[1:] + corners[:1], strict=True):
+        lines += ["0", "LINE", "8", "OUTLINE", "10", str(ax), "20", str(ay)]
+        lines += ["11", str(bx), "21", str(by)]
+    lines += ["0", "ENDSEC", "0", "EOF"]
+    path.write_text("\n".join(lines) + "\n")
+    return path

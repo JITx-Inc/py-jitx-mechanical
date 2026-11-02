@@ -426,6 +426,10 @@ def _classify_layer(layer_name: str) -> str | None:
 
 
 def _detect_units(doc: Drawing) -> str | None:
+    # R12 cannot declare units. ezdxf also reads a file without a HEADER section as
+    # R12 and supplies a default header that claims meters.
+    if doc.dxfversion <= "AC1009":
+        return None
     code = int(doc.header.get("$INSUNITS", 0))
     if not code:
         return None
@@ -441,11 +445,11 @@ def _resolve_unit_scale(doc: Drawing, forced_unit: str | None, msp) -> float:
             raise ValueError(f"Invalid unit {forced_unit!r}; expected one of {sorted(_UNIT_TO_MM)}")
         return _UNIT_TO_MM[forced_unit]
 
-    code = int(doc.header.get("$INSUNITS", 0))
-    if code:
-        decoded = _detect_units(doc)
+    decoded = _detect_units(doc)
+    if decoded is not None:
         if decoded in _UNIT_TO_MM:
             return _UNIT_TO_MM[decoded]
+        code = int(doc.header.get("$INSUNITS", 0))
         try:
             return units.conversion_factor(InsertUnits(code), InsertUnits.Millimeters)
         except (TypeError, ValueError) as exc:
