@@ -96,9 +96,10 @@ def generate_board_module(
     lines.append("")
     lines.append("")
     if imported.mechanical_components:
-        lines.append("# Mechanical/plated holes are emitted as connectable JITX Component")
-        lines.append("# classes in the companion `_components.py` module — instantiate")
-        lines.append("# `MechanicalComponentsCircuit` there and net its ports into your design.")
+        lines.append("# Holes imported as components are defined in the companion components")
+        lines.append("# module (`<output stem>_components.py` from the jitx-mechanical CLI).")
+        lines.append("# Add its `MechanicalComponentsCircuit` to your design and connect each")
+        lines.append("# hole's `p1` port.")
     else:
         lines.append("MECHANICAL_COMPONENTS = []")
 
@@ -506,8 +507,8 @@ def generate_components_module(
     body.append("class MechanicalComponentsCircuit(Circuit):")
     body.append('    """Imported mechanical holes placed in the same frame as the generated Board.')
     body.append("")
-    body.append("    Net the exposed ports into your design — for example, connect every")
-    body.append("    PLATED hole's `.p1` to a chassis-ground net at the Design level.")
+    body.append("    Each list attribute holds one single-pin component per hole of a given")
+    body.append("    size and plating. Connect each hole's `p1` port to the net it belongs on.")
     body.append('    """')
     body.append("")
     body.append("    def __init__(self):")
