@@ -119,6 +119,6 @@ only when started from a tag; nothing else publishes.
 
 The workflow uses the organization secrets `GITHUBAPP_CLIENT_ID`,
 `GITHUBAPP_PRIVATE_KEY`, and `HATCH_INDEX_AUTH` and the variable
-`HATCH_INDEX_USER`. An organization administrator must grant this repository
-access to them before the first release.
+`HATCH_INDEX_USER`. An organization owner must grant this repository access to
+them before the first release. The workflow's first job names any it cannot read.
 
