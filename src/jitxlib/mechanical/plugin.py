@@ -66,6 +66,22 @@ class DxfExport(Export):
         copper: bool = True,
         annotations: bool = True,
     ) -> None:
+        """Write the captured design to a millimeter DXF file.
+
+        Args:
+            design: The captured design.
+            output: Destination file. None writes the sanitized design name with a
+                .dxf suffix in the working directory.
+            overwrite: Whether an existing file may be replaced.
+            layers: DXF layer names to include. None includes every layer.
+            board_outline: Include the board outline.
+            components: Include component markers and reference designators.
+            pads: Include pad copper.
+            drill: Include drilled holes and cutouts.
+            vias: Include via copper.
+            copper: Include other copper.
+            annotations: Include surface features and keepouts.
+        """
         from .exporters.dxf import DxfExportConfig, export_dxf
 
         result = export_dxf(

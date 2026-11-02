@@ -32,9 +32,8 @@ _CUSTOM_NAME_BY_ROLE = {
 
 DEFAULT_PRECISION = 4
 DEFAULT_ANNULAR_PAD_MARGIN_MM = 0.4
-"""Copper extends past the hole edge by this margin on each side
-when no annular ring data is in the source. Doubled when computing
-the pad diameter (`hole_diameter + 2 * margin`)."""
+"""Default radial copper and soldermask extension beyond each generated hole, in
+millimeters. A pad's diameter is its hole diameter plus twice this margin."""
 
 
 def generate_board_module(
@@ -47,11 +46,22 @@ def generate_board_module(
 ) -> str:
     """Return Python source for a Board with attached cutouts and drawing features.
 
-    ``imported`` must contain an outline in millimeters. ``class_name`` is
-    converted to a valid Python identifier; ``module_name`` identifies the source
-    in the module's description. Recentering moves the outline's bounding-box
-    center to the origin and applies the same offset to every attached feature.
-    ``precision`` controls decimal places and must be between 0 and 12.
+    Args:
+        imported: Import result with a board outline, in millimeters.
+        class_name: Name of the generated Board subclass, converted to a valid
+            Python identifier.
+        module_name: Source named in the generated module's docstring. None names
+            the import's source path.
+        recenter: Whether to move the outline's bounding-box center to the origin.
+            The same offset applies to every attached feature.
+        precision: Decimal places in generated coordinates, from 0 to 12.
+
+    Returns:
+        The module source.
+
+    Raises:
+        ValueError: If ``imported`` has no board outline or ``precision`` is out
+            of range.
     """
 
     if imported.board_outline is None:
@@ -86,9 +96,10 @@ def generate_board_module(
     lines.append("")
     lines.append("")
     if imported.mechanical_components:
-        lines.append("# Mechanical/plated holes are emitted as connectable JITX Component")
-        lines.append("# classes in the companion `_components.py` module — instantiate")
-        lines.append("# `MechanicalComponentsCircuit` there and net its ports into your design.")
+        lines.append("# Holes imported as components are defined in the companion components")
+        lines.append("# module (`<output stem>_components.py` from the jitx-mechanical CLI).")
+        lines.append("# Add its `MechanicalComponentsCircuit` to your design and connect each")
+        lines.append("# hole's `p1` port.")
     else:
         lines.append("MECHANICAL_COMPONENTS = []")
 
@@ -428,12 +439,24 @@ def generate_components_module(
 ) -> str:
     """Return Python source for the import's connectable holes and their Circuit.
 
-    An import with no mechanical components produces an empty string.
-    ``module_name`` identifies the source in the module's description.
-    ``recenter`` and ``precision`` must match the corresponding Board generation
-    call so both modules share an origin and coordinate precision.
-    ``annular_pad_margin`` is the positive radial copper and soldermask extension
-    beyond each hole, in millimeters; it is not a fabrication rule from the source.
+    Args:
+        imported: Import result whose ``mechanical_components`` lists the holes.
+        module_name: Source named in the generated module's docstring. None names
+            the import's source path.
+        recenter: Whether to move the board outline's center to the origin. Must
+            match the ``generate_board_module`` call so both modules share an origin.
+        precision: Decimal places in generated coordinates, from 0 to 12. Must
+            match the ``generate_board_module`` call.
+        annular_pad_margin: Radial copper and soldermask extension beyond each
+            hole, in millimeters. It is not a fabrication rule from the source.
+
+    Returns:
+        The module source, or an empty string when the import has no mechanical
+        components.
+
+    Raises:
+        ValueError: If ``precision`` is out of range, ``annular_pad_margin`` is not
+            a positive finite length, or a hole radius is not positive and finite.
     """
     _validate_precision(precision)
     if not math.isfinite(annular_pad_margin) or annular_pad_margin <= 0:
@@ -484,8 +507,8 @@ def generate_components_module(
     body.append("class MechanicalComponentsCircuit(Circuit):")
     body.append('    """Imported mechanical holes placed in the same frame as the generated Board.')
     body.append("")
-    body.append("    Net the exposed ports into your design — for example, connect every")
-    body.append("    PLATED hole's `.p1` to a chassis-ground net at the Design level.")
+    body.append("    Each list attribute holds one single-pin component per hole of a given")
+    body.append("    size and plating. Connect each hole's `p1` port to the net it belongs on.")
     body.append('    """')
     body.append("")
     body.append("    def __init__(self):")

@@ -1,4 +1,4 @@
-"""Geometry helpers shared by mechanical importers."""
+"""Geometry helpers for the mechanical importers and code generation."""
 
 from __future__ import annotations
 
@@ -20,7 +20,12 @@ _GRID_INV = 1000
 
 
 def point_key(point: Point, grid_inv: int = _GRID_INV) -> _PointKey:
-    """Hash a point to a tolerance grid cell."""
+    """Return the tolerance-grid cell that contains ``point``.
+
+    Args:
+        point: The point to locate.
+        grid_inv: Grid cells per unit length.
+    """
 
     return (round(point.x * grid_inv), round(point.y * grid_inv))
 
@@ -41,7 +46,21 @@ def assemble_closed_paths(
     source_layer: str = "",
     source_section: str = "",
 ) -> list[ClosedPath]:
-    """Assemble disconnected LINE/ARC segments into closed paths."""
+    """Join line and arc segments whose endpoints meet into closed paths.
+
+    Segments that do not close into a loop are left out of the result.
+
+    Args:
+        lines: Line segments as (start, end) points.
+        arcs: Arc segments.
+        tolerance: Grid size for matching endpoints. Endpoints in the same grid
+            cell are treated as one point.
+        source_layer: Source layer recorded on each path.
+        source_section: Source section recorded on each path.
+
+    Returns:
+        The closed paths.
+    """
 
     grid_inv = round(1.0 / tolerance)
     segments: list[PathSegment] = [LinePathSegment(start=start, end=end) for start, end in lines]
@@ -155,7 +174,22 @@ def lwpolyline_to_closed_path(
     *,
     source_section: str = "",
 ) -> ClosedPath:
-    """Convert a closed DXF LWPOLYLINE to a ClosedPath."""
+    """Return the closed path for a DXF polyline's vertices and bulges.
+
+    The last vertex connects back to the first.
+
+    Args:
+        points: Vertex coordinates.
+        bulges: Bulge of the segment starting at each vertex; 0 for a line.
+        layer: Source layer recorded on the path.
+        source_section: Source section recorded on the path.
+
+    Returns:
+        The closed path.
+
+    Raises:
+        ValueError: If ``points`` and ``bulges`` differ in length.
+    """
 
     if len(bulges) != len(points):
         msg = (
@@ -182,7 +216,17 @@ def lwpolyline_to_closed_path(
 
 
 def bulge_to_arc(p1: Point, p2: Point, bulge: float) -> ArcPathSegment:
-    """Convert a DXF bulge value between two points to an arc segment."""
+    """Return the arc a DXF bulge describes between two points.
+
+    Args:
+        p1: Arc start point.
+        p2: Arc end point.
+        bulge: Tangent of a quarter of the included angle. Positive values run
+            counterclockwise.
+
+    Returns:
+        The arc segment. Coincident points give a zero-radius arc.
+    """
 
     dx = p2.x - p1.x
     dy = p2.y - p1.y
@@ -222,14 +266,19 @@ def bulge_to_arc(p1: Point, p2: Point, bulge: float) -> ArcPathSegment:
     )
 
 
-def arc_from_chord(
-    start: Point,
-    end: Point,
-    sweep_angle: float,
-    *,
-    loop_num: int = 0,
-) -> ArcPathSegment | None:
-    """Build an arc segment from an IDF chord endpoint and sweep angle."""
+def arc_from_chord(start: Point, end: Point, sweep_angle: float) -> ArcPathSegment | None:
+    """Return the arc from ``start`` to ``end`` with the given included angle.
+
+    Args:
+        start: Arc start point.
+        end: Arc end point.
+        sweep_angle: Included angle in degrees. Positive values run
+            counterclockwise.
+
+    Returns:
+        The arc segment, or None if the points coincide or the angle is a whole
+        number of turns.
+    """
 
     chord = math.hypot(end.x - start.x, end.y - start.y)
     if chord < 1e-10:
@@ -269,10 +318,19 @@ def arc_from_chord(
 def circle_from_center(
     center: Point, point: Point, *, layer: str = "", section: str = ""
 ) -> CircleGeometry | None:
-    """Return the circle an IDF 360-degree loop describes, or None if it has no radius.
+    """Return the circle an IDF 360-degree loop describes.
 
     In IDF, a circle is two loop points: the center, then a point on the circle
     with an angle of 360 degrees.
+
+    Args:
+        center: The circle's center.
+        point: A point on the circle.
+        layer: Source layer recorded on the circle.
+        section: Source section recorded on the circle.
+
+    Returns:
+        The circle, or None if the two points coincide.
     """
 
     radius = math.hypot(point.x - center.x, point.y - center.y)

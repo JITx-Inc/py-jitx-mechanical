@@ -35,7 +35,23 @@ def _side(transform: Transform) -> Side:
 
 
 def extract_design(design: RuntimeDesign, config: DxfExportConfig) -> list[Entity]:
-    """Extract placed outlines, physical holes, copper, and drawing features."""
+    """Return a captured design's board geometry as DXF entities in millimeters.
+
+    The entities cover the board outline, component markers and reference
+    designators, pad and via copper, drilled holes and cutouts, other copper,
+    surface features, and keepouts, limited to what ``config`` selects.
+
+    Args:
+        design: The captured design.
+        config: Selects layers and geometry categories.
+
+    Returns:
+        The entities, each on its DXF layer.
+
+    Raises:
+        ValueError: If the stackup has no conductor layers, or if selected
+            geometry is unplaced or cannot be represented in DXF.
+    """
     entities: list[Entity] = []
     conductors = list(design.root.substrate.stackup.conductors)
     count = len(conductors)
@@ -51,7 +67,7 @@ def extract_design(design: RuntimeDesign, config: DxfExportConfig) -> list[Entit
         index = count + index if index < 0 else index
         if not 0 <= index < count:
             raise ValueError(f"Conductor layer {index} is outside the {count}-layer stackup")
-        # Retain the established outer-pad names; inner pads carry the stackup name.
+        # Outer pad layers are Pads_Top and Pads_Bottom; other layers use stackup names.
         name = "Top" if index == 0 else "Bottom" if index == count - 1 else layer_names[index]
         return f"{prefix}_{name if prefix == 'Pads' else layer_names[index]}"
 

@@ -69,6 +69,12 @@ class DxfExportConfig:
     layer_colors: dict[str, int] = field(default_factory=dict)
 
     def includes(self, category: Category, layer: str) -> bool:
+        """Return whether geometry of ``category`` on ``layer`` is selected.
+
+        Args:
+            category: Geometry category.
+            layer: DXF layer name.
+        """
         return bool(getattr(self, f"include_{category}")) and (
             self.layers is None or layer in self.layers
         )

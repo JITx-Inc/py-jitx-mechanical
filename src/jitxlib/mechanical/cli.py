@@ -15,6 +15,7 @@ from .reports import write_import_report
 
 
 def main() -> None:
+    """Run the jitx-mechanical command line."""
     parser = argparse.ArgumentParser(
         prog="jitx-mechanical",
         description="Inspect mechanical drawings and generate JITX Board code.",
