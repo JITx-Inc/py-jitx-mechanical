@@ -141,6 +141,10 @@ IDF_FILE 3.0 "Test" "2026-01-01" 1 "Board" "MM"
     actual = sorted(tuple(e.dxf.center)[:2] for e in circles)
     assert actual == [pytest.approx(p) for p in sorted(expected)]
     assert sorted(e.dxf.radius for e in circles) == [1, 1, 1, 1.5]
+    # Each through-hole pad opens the solder mask on both sides of the board.
+    model = ezdxf.readfile(output).modelspace()
+    for side in ("Top", "Bottom"):
+        assert len(model.query(f'CIRCLE[layer=="Soldermask_{side}"]')) == 3
 
 
 def test_generated_custom_region_and_rotated_text(tmp_path, design_context):
