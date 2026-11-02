@@ -54,6 +54,25 @@ core-metadata-version = "2.4"
 source = "vcs"
 fallback-version = "0.0.0+undefined"
 
+# Environments run by jitx-inc/pybuild-action in the release workflow:
+# "hatch fmt --check", "hatch run types:check", and "hatch test --cover".
+[tool.hatch.envs.hatch-static-analysis]
+dependencies = ["ruff>=0.15"]
+config-path = "none"
+
+[tool.hatch.envs.types]
+extra-dependencies = ["pyright>=1.1"]
+
+[tool.hatch.envs.types.scripts]
+check = "pyright"
+
+[tool.hatch.envs.hatch-test]
+installer = "pip"
+dependencies = ["coverage[toml]", "pytest>=8", "pytest-cov"]
+
+[[tool.hatch.envs.test.matrix]]
+python = ["3.12", "3.13", "3.14"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
