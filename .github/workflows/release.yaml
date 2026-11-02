@@ -1,0 +1,79 @@
+name: Release
+
+# Publishes to pypi.jitx.com/jitx/main only when run for a vX.Y.Z tag.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: Test on Python ${{ matrix.python-version }}
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        python-version: ["3.13", "3.14"]
+    steps:
+      - name: Generate an app token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          owner: "JITX-Inc"
+          client-id: ${{ secrets.GITHUBAPP_CLIENT_ID }}
+          private-key: ${{ secrets.GITHUBAPP_PRIVATE_KEY }}
+
+      # pybuild-action is private and this repository is public.
+      - name: Check out pybuild-action
+        uses: actions/checkout@v6
+        with:
+          repository: jitx-inc/pybuild-action
+          ref: v1
+          token: ${{ steps.app-token.outputs.token }}
+          path: ./pybuild-action
+
+      - name: Lint, type-check, test, and build
+        uses: ./pybuild-action
+        with:
+          python-version: ${{ matrix.python-version }}
+          run-publish: false
+          run-github-release-on-tag: false
+          run-internal-test-designs: false
+
+  publish:
+    name: Publish from Python 3.12
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Generate an app token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          owner: "JITX-Inc"
+          client-id: ${{ secrets.GITHUBAPP_CLIENT_ID }}
+          private-key: ${{ secrets.GITHUBAPP_PRIVATE_KEY }}
+
+      - name: Check out pybuild-action
+        uses: actions/checkout@v6
+        with:
+          repository: jitx-inc/pybuild-action
+          ref: v1
+          token: ${{ steps.app-token.outputs.token }}
+          path: ./pybuild-action
+
+      - name: Lint, type-check, test, build, and publish
+        uses: ./pybuild-action
+        with:
+          python-version: "3.12"
+          run-publish: true
+          run-internal-test-designs: false
+          hatch-index-user: ${{ vars.HATCH_INDEX_USER }}
+          hatch-index-auth: ${{ secrets.HATCH_INDEX_AUTH }}
+          # The action creates the GitHub release with this app's token.
+          githubapp-client-id: ${{ secrets.GITHUBAPP_CLIENT_ID }}
+          githubapp-private-key: ${{ secrets.GITHUBAPP_PRIVATE_KEY }}

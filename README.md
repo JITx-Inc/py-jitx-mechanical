@@ -107,3 +107,18 @@ test is opt-in: set `JITX_MECHANICAL_RUNTIME_URI` to a running 4.6 runtime's
 websocket URI and run `pytest tests/test_runtime_capture.py -q`. `jitx runtime start
 --bg` prints the URI. The [4.6 validation record](docs/validation-4.6.md) lists
 the tested versions and the remaining release gates.
+
+## Release
+
+Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yaml`. It checks
+formatting, types, and tests on Python 3.12, 3.13, and 3.14 with the
+organization's `pybuild-action`. It then publishes the wheel and sdist built on
+Python 3.12 to `https://pypi.jitx.com/jitx/main` and creates a GitHub release.
+The package version comes from the tag. A manual run of the workflow publishes
+only when started from a tag; nothing else publishes.
+
+The workflow uses the organization secrets `GITHUBAPP_CLIENT_ID`,
+`GITHUBAPP_PRIVATE_KEY`, and `HATCH_INDEX_AUTH` and the variable
+`HATCH_INDEX_USER`. An organization administrator must grant this repository
+access to them before the first release.
+
