@@ -222,13 +222,7 @@ def bulge_to_arc(p1: Point, p2: Point, bulge: float) -> ArcPathSegment:
     )
 
 
-def arc_from_chord(
-    start: Point,
-    end: Point,
-    sweep_angle: float,
-    *,
-    loop_num: int = 0,
-) -> ArcPathSegment | None:
+def arc_from_chord(start: Point, end: Point, sweep_angle: float) -> ArcPathSegment | None:
     """Build an arc segment from an IDF chord endpoint and sweep angle."""
 
     chord = math.hypot(end.x - start.x, end.y - start.y)

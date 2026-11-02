@@ -343,7 +343,7 @@ class IdfParser:
                         loop_circles.append(circle)
                     current = new_point
                 else:
-                    arc = arc_from_chord(current, new_point, point.angle, loop_num=loop_num)
+                    arc = arc_from_chord(current, new_point, point.angle)
                     if arc is None:
                         self.result.warn(
                             f"Skipped invalid arc in loop {loop_num}",
