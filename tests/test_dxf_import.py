@@ -4,10 +4,10 @@ import math
 
 import ezdxf
 import pytest
-from synthetic import write_dxf
+from synthetic import write_dxf, write_headerless_dxf
 
 from jitxlib.mechanical.importers.dxf import import_dxf, read_dxf
-from jitxlib.mechanical.models import CircleGeometry, HolePolicy, Point
+from jitxlib.mechanical.models import ArcPathSegment, CircleGeometry, HolePolicy, Point
 
 SLOTS = [(5, 5, 8, 7), (12, 5, 15, 7), (25, 13, 28, 15), (32, 13, 35, 15)]
 
@@ -213,3 +213,79 @@ def test_unclosed_line_arc_chain_is_reported(tmp_path):
     assert imported.unclassified[0].source_name == "detail"
     assert imported.unclassified[0].count == 2
     assert not imported.board_cutouts
+
+
+def _mirrored_drawing(path):
+    """Draw a board whose entities use extrusion (0, 0, -1), so object x is drawing -x."""
+    doc = ezdxf.new("R2010")
+    doc.units = ezdxf.units.MM
+    msp = doc.modelspace()
+    mirror = {"extrusion": (0, 0, -1)}
+    msp.add_lwpolyline(
+        [(0, 0), (-40, 0), (-40, 20), (0, 20)],
+        close=True,
+        dxfattribs={"layer": "OUTLINE", **mirror},
+    )
+    msp.add_circle((-30, 5), 1.0, dxfattribs={"layer": "HOLES", **mirror})
+    # A slot from drawing x 7 to 13 at y 10: two half circles joined by lines.
+    msp.add_arc((-12, 10), 1.0, 90, 270, dxfattribs={"layer": "SLOTS", **mirror})
+    msp.add_arc((-8, 10), 1.0, 270, 90, dxfattribs={"layer": "SLOTS", **mirror})
+    # LINE coordinates are already in drawing coordinates.
+    msp.add_line((8, 11), (12, 11), dxfattribs={"layer": "SLOTS"})
+    msp.add_line((8, 9), (12, 9), dxfattribs={"layer": "SLOTS"})
+    msp.add_text(
+        "NOTE",
+        height=1.0,
+        rotation=30,
+        dxfattribs={"layer": "NOTES", "insert": (-5, 15), **mirror},
+    )
+    doc.saveas(path)
+    return path
+
+
+def test_mirrored_entities_import_in_drawing_coordinates(tmp_path):
+    imported = import_dxf(str(_mirrored_drawing(tmp_path / "mirrored.dxf")))
+
+    corners = [segment.start for segment in imported.board_outline.segments]
+    assert min(p.x for p in corners) == pytest.approx(0)
+    assert max(p.x for p in corners) == pytest.approx(40)
+
+    (hole,) = imported.holes
+    assert (hole.geometry.center.x, hole.geometry.center.y) == pytest.approx((30, 5))
+
+    (slot,) = [g for g in imported.board_cutouts if not isinstance(g, CircleGeometry)]
+    arcs = [segment for segment in slot.segments if isinstance(segment, ArcPathSegment)]
+    assert len(slot.segments) == 4 and len(arcs) == 2
+    # Each half circle bulges away from the slot's middle: x 7 on the left, 13 on the right.
+    for arc in arcs:
+        middle = math.radians((arc.start_angle + arc.end_angle) / 2)
+        outward = 1 if arc.center.x > 10 else -1
+        assert arc.center.x + arc.radius * math.cos(middle) == pytest.approx(10 + 3 * outward)
+
+    (note,) = imported.annotations
+    assert (note.position.x, note.position.y) == pytest.approx((5, 15))
+    assert note.rotation == pytest.approx(150)
+
+
+def test_mirrored_entities_inventory_bounds(tmp_path):
+    inv = read_dxf(str(_mirrored_drawing(tmp_path / "mirrored.dxf")))
+    assert inv.bounding_box == (Point(0, 0), Point(40, 20))
+
+
+def test_entities_outside_the_xy_plane_are_reported(tmp_path):
+    source = write_dxf(tmp_path / "tilted.dxf")
+    doc = ezdxf.readfile(source)
+    doc.modelspace().add_circle((5, 5), 1.0, dxfattribs={"extrusion": (1, 0, 0)})
+    doc.saveas(source)
+    imported = import_dxf(str(source))
+    assert not imported.holes
+    assert any(o.source_name == "CIRCLE outside the XY plane" for o in imported.unclassified)
+
+
+def test_headerless_drawings_are_treated_as_unitless(tmp_path):
+    source = write_headerless_dxf(tmp_path / "headerless.dxf")
+    assert read_dxf(str(source)).units is None
+    imported = import_dxf(str(source))
+    assert imported.source_units is None
+    assert imported.unit_scale == 1.0
+    assert any("units are unspecified" in message.text for message in imported.messages)

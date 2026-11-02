@@ -287,7 +287,8 @@ def test_layer_string_mapping():
     assert _layer_string_to_layerset("TOP") == "LayerSet(0)"
     assert _layer_string_to_layerset("Top") == "LayerSet(0)"  # case-insensitive
     assert _layer_string_to_layerset("BOTTOM") == "LayerSet(-1)"
-    assert _layer_string_to_layerset("BOTH") == "LayerSet.all()"
+    assert _layer_string_to_layerset("BOTH") == "LayerSet(0, -1)"
+    assert _layer_string_to_layerset("INNER") == "LayerSet.range(1, through=-2)"
     assert _layer_string_to_layerset("ALL") == "LayerSet.all()"
     assert _layer_string_to_layerset("") == "LayerSet.all()"
     assert _layer_string_to_layerset("WAT") == "LayerSet.all()"

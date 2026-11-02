@@ -159,8 +159,9 @@ def extract_design(design: RuntimeDesign, config: DxfExportConfig) -> list[Entit
             for start, stop in keepout.layers.ranges:
                 start = count + start if start < 0 else start
                 stop = count + stop if stop < 0 else stop
-                if not 0 <= start <= stop < count:
+                if not (0 <= start < count and 0 <= stop < count):
                     raise ValueError(f"Invalid keepout layer range {start}..{stop}")
+                # An inner-layer range is empty on a two-layer board.
                 indexes.update(range(start, stop + 1))
             for index in sorted(indexes):
                 side = _side(trace.transform) if trace.transform is not None else Side.Top

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from synthetic import place_keepout, route_keepout, via_keepout, write_emn
+
 from jitxlib.mechanical.importers.idf import import_idf
 from jitxlib.mechanical.models import CircleGeometry, ClosedPath, HolePlating, HolePolicy
 
@@ -134,3 +137,38 @@ IDF_FILE 3.0 "Test" "2024-01-01" 1 "Test" "MM"
 """
     imported = import_idf(str(_write(tmp_path, content)))
     assert isinstance(imported.board_outline, ClosedPath)
+
+
+def test_360_degree_loop_is_center_and_point_on_circle(tmp_path):
+    keepout = ".ROUTE_KEEPOUT ECAD\nALL\n0 10 10 0\n0 11.5 10 360\n.END_ROUTE_KEEPOUT"
+    source = write_emn(tmp_path / "circle.emn", holes=[(2.0, 10, 10, "NPTH")], sections=[keepout])
+    imported = import_idf(str(source))
+    (region,) = imported.regions
+    assert isinstance(region.geometry, CircleGeometry)
+    assert (region.geometry.center.x, region.geometry.center.y) == (10, 10)
+    assert region.geometry.radius == pytest.approx(1.5)
+
+
+def test_region_layer_and_side_fields(tmp_path):
+    other = ".OTHER_OUTLINE ECAD\nSTIFFENER 0.8 BOTTOM\n0 1 1 0\n0 4 1 0\n0 4 4 0\n0 1 1 0\n.END_OTHER_OUTLINE"
+    unknown = ".ROUTE_KEEPOUT ECAD\nL7\n0 5 5 0\n0 6 5 0\n0 6 6 0\n0 5 5 0\n.END_ROUTE_KEEPOUT"
+    source = write_emn(
+        tmp_path / "fields.emn",
+        sections=[
+            other,
+            via_keepout((10, 10, 12, 12)),
+            place_keepout("BOTTOM", (20, 20, 22, 22), height=1.5),
+            route_keepout("INNER", (30, 10, 32, 12)),
+            unknown,
+        ],
+    )
+    imported = import_idf(str(source))
+    by_role = {region.role: region for region in imported.regions}
+    assert by_role["other_outline"].layers == "BOTTOM"
+    assert by_role["other_outline"].thickness == pytest.approx(0.8)
+    assert by_role["via_keepout"].layers == ""
+    assert by_role["place_keepout"].layers == "BOTTOM"
+    assert by_role["place_keepout"].thickness == pytest.approx(1.5)
+    route_layers = [r.layers for r in imported.regions if r.role == "route_keepout"]
+    assert route_layers == ["INNER", "ALL"]
+    assert any("'L7'" in message.text for message in imported.messages)

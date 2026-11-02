@@ -21,6 +21,7 @@ from .models import (
 )
 
 _KEEPOUT_ROLES = frozenset({"route_keepout", "via_keepout"})
+_SIDED_ROLES = frozenset({"place_keepout", "place_outline", "other_outline"})
 _DEFAULT_ANNOTATION_HEIGHT_MM = 1.0
 _CUSTOM_NAME_BY_ROLE = {
     "place_keepout": "PlaceKeepout",
@@ -156,6 +157,7 @@ def _imports(imported: MechanicalImport) -> list[str]:
     needs_keepout = bool(keepout_regions)
     needs_custom = bool(custom_regions) or needs_text
     needs_layerset = needs_keepout
+    needs_side = any(_region_sides(r) != ("",) for r in custom_regions)
 
     shape_imports: list[str] = []
     if needs_arc_polygon:
@@ -178,8 +180,11 @@ def _imports(imported: MechanicalImport) -> list[str]:
     lines = ["from jitx.board import Board"]
     if feature_imports:
         lines.append(f"from jitx.feature import {', '.join(feature_imports)}")
-    if needs_layerset:
-        lines.append("from jitx.layerindex import LayerSet")
+    layerindex_imports = [
+        name for name, needed in (("LayerSet", needs_layerset), ("Side", needs_side)) if needed
+    ]
+    if layerindex_imports:
+        lines.append(f"from jitx.layerindex import {', '.join(layerindex_imports)}")
     if shape_imports:
         lines.append(f"from jitx.shapes.primitive import {', '.join(shape_imports)}")
     return lines
@@ -230,9 +235,25 @@ def _region_feature_lines(
             "        )",
         ]
     name = _CUSTOM_NAME_BY_ROLE.get(region.role, _to_pascal(region.role))
-    return [
-        f"        self.{attr} = Custom({shape_code}, name={name!r})",
-    ]
+    sides = _region_sides(region)
+    lines = []
+    for side in sides:
+        suffix = f"_{side.lower()}" if len(sides) > 1 else ""
+        side_arg = f", Side.{side}" if side else ""
+        lines.append(f"        self.{attr}{suffix} = Custom({shape_code}{side_arg}, name={name!r})")
+    return lines
+
+
+def _region_sides(region: MechanicalRegion) -> tuple[str, ...]:
+    """Return the Side member names for a region's Custom features; "" keeps the default."""
+    if region.role not in _SIDED_ROLES:
+        return ("",)
+    token = (region.layers or "").strip().upper()
+    if token == "BOTTOM":
+        return ("Bottom",)
+    if token == "BOTH":
+        return ("Top", "Bottom")
+    return ("",)
 
 
 def _annotation_feature_lines(
@@ -260,6 +281,10 @@ def _layer_string_to_layerset(layers: str) -> str:
         return "LayerSet(0)"
     if token == "BOTTOM":
         return "LayerSet(-1)"
+    if token == "BOTH":
+        return "LayerSet(0, -1)"
+    if token == "INNER":
+        return "LayerSet.range(1, through=-2)"
     return "LayerSet.all()"
 
 
@@ -430,6 +455,7 @@ def generate_components_module(
         "from jitx.component import Component",
         "from jitx.feature import Cutout, Soldermask",
         "from jitx.landpattern import Landpattern, Pad",
+        "from jitx.layerindex import Side",
         "from jitx.net import Port",
         "from jitx.shapes.primitive import Circle",
         "from jitx.symbol import Pin, Symbol",
@@ -514,6 +540,7 @@ def _component_class_lines(
         "    def __init__(self):",
         f"        self.cutout = Cutout(Circle(diameter={hole_str}))",
         "        self.soldermask = Soldermask(self.shape)",
+        "        self.soldermask_bottom = Soldermask(self.shape, side=Side.Bottom)",
         "",
         f"class {lp_cls}(Landpattern):",
         "    def __init__(self):",

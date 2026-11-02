@@ -6,7 +6,7 @@ import pytest
 from jitx import Circuit, Component, Cutout, Pad
 from jitx.feature import Custom
 from jitx.landpattern import PadMapping
-from jitx.sample import SampleDesign
+from jitx.sample import SampleDesign, SampleStackup, SampleSubstrate
 from synthetic import place_keepout, route_keepout, via_keepout, write_emn
 
 from jitxlib.mechanical import (
@@ -53,6 +53,14 @@ def load_code(path, code):
     return module
 
 
+def _custom_feature_count(region):
+    """Keepouts become KeepOut features; a region on both board sides becomes two Custom features."""
+    if region.role in {"route_keepout", "via_keepout"}:
+        return 0
+    sided = region.role in {"place_keepout", "place_outline", "other_outline"}
+    return 2 if sided and region.layers == "BOTH" else 1
+
+
 @pytest.mark.parametrize("build", [_square_cut, _features], ids=["square_cut", "features"])
 def test_generated_boards_translate_with_attached_features(tmp_path, design_context, build):
     imported = import_idf(str(build(tmp_path)))
@@ -64,7 +72,7 @@ def test_generated_boards_translate_with_attached_features(tmp_path, design_cont
         assert package.v1.boards
         assert len(list(design.query(Cutout))) == len(imported.board_cutouts)
         assert len(list(design.query(Custom))) == sum(
-            r.role not in {"route_keepout", "via_keepout"} for r in imported.regions
+            _custom_feature_count(r) for r in imported.regions
         ) + len(imported.annotations)
         if build is _square_cut:
             output = export_dxf(design, tmp_path / "square.dxf")
@@ -133,6 +141,10 @@ IDF_FILE 3.0 "Test" "2026-01-01" 1 "Board" "MM"
     actual = sorted(tuple(e.dxf.center)[:2] for e in circles)
     assert actual == [pytest.approx(p) for p in sorted(expected)]
     assert sorted(e.dxf.radius for e in circles) == [1, 1, 1, 1.5]
+    # Each through-hole pad opens the solder mask on both sides of the board.
+    model = ezdxf.readfile(output).modelspace()
+    for side in ("Top", "Bottom"):
+        assert len(model.query(f'CIRCLE[layer=="Soldermask_{side}"]')) == 3
 
 
 def test_generated_custom_region_and_rotated_text(tmp_path, design_context):
@@ -220,3 +232,63 @@ def test_keepouts_annotations_and_cutouts_share_origin(tmp_path, design_context,
     note = next(e for e in model if e.dxftype() == "TEXT")
     assert tuple(note.dxf.align_point)[:2] == pytest.approx((13 - dx, 24 - dy))
     assert note.dxf.rotation == pytest.approx(35)
+
+
+class FourLayerSubstrate(SampleSubstrate):
+    stackup = SampleStackup(4)
+
+
+def _sided_regions(tmp_path):
+    source = write_emn(
+        tmp_path / "sides.emn",
+        sections=[
+            place_keepout("BOTTOM", (2, 2, 6, 6)),
+            place_keepout("BOTH", (10, 2, 14, 6)),
+            route_keepout("INNER", (20, 2, 24, 6)),
+            route_keepout("BOTH", (30, 2, 34, 6)),
+        ],
+    )
+    module = load_code(tmp_path / "sides_board.py", generate_board_module(import_idf(str(source))))
+    return module.ImportedBoard()
+
+
+def test_region_sides_and_keepout_layers_translate_and_export(tmp_path, design_context):
+    from jitx import KeepOut
+
+    design_cls = type(
+        "SidesDesign",
+        (SampleDesign,),
+        {
+            "board": _sided_regions(tmp_path),
+            "circuit": Circuit(),
+            "substrate": FourLayerSubstrate(),
+        },
+    )
+    with design_context(design_cls) as (design, _):
+        sides = sorted(feature.side.name for _, feature in design.query(Custom))
+        assert sides == ["Bottom", "Bottom", "Top"]
+        ranges = sorted(list(keepout.layers.ranges) for _, keepout in design.query(KeepOut))
+        assert ranges == [[(0, 0), (-1, -1)], [(1, -2)]]
+        output = export_dxf(design, tmp_path / "sides.dxf")
+    layers = {entity.dxf.layer for entity in ezdxf.readfile(output).modelspace()}
+    assert {"PlaceKeepout_Top", "PlaceKeepout_Bottom"} <= layers
+    keepout_layers = {layer for layer in layers if layer.startswith("KeepOut_")}
+    assert keepout_layers == {
+        "KeepOut_Top",
+        "KeepOut_Top + 1",
+        "KeepOut_Bottom - 1",
+        "KeepOut_Bottom",
+    }
+
+
+def test_inner_keepout_on_two_layer_board_exports_nothing(tmp_path, design_context):
+    design_cls = type(
+        "TwoLayerDesign", (SampleDesign,), {"board": _sided_regions(tmp_path), "circuit": Circuit()}
+    )
+    with design_context(design_cls) as (design, _):
+        output = export_dxf(design, tmp_path / "two-layer.dxf")
+    layers = {entity.dxf.layer for entity in ezdxf.readfile(output).modelspace()}
+    assert {layer for layer in layers if layer.startswith("KeepOut_")} == {
+        "KeepOut_Top",
+        "KeepOut_Bottom",
+    }
