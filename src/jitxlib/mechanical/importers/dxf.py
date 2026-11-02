@@ -52,6 +52,9 @@ _UNIT_TO_MM: dict[str, float] = {
     "yd": 914.4,
 }
 
+_EXTRUSION_TOLERANCE = 1e-9
+_PLANAR_TYPES = frozenset({"CIRCLE", "ARC", "LWPOLYLINE", "TEXT", "HATCH"})
+
 _LAYER_PATTERNS: dict[str, list[str]] = {
     "outline": ["outline", "board", "boundary", "profile", "edge", "border"],
     "cutout": ["cutout", "route", "rout", "slot", "interior_profile"],
@@ -150,6 +153,10 @@ def import_dxf(
     for entity in msp:
         etype = entity.dxftype()
         layer = entity.dxf.layer
+        sign = _ocs_x_sign(entity)
+        if sign is None:
+            unclassified_types[f"{etype} outside the XY plane"] += 1
+            continue
         if etype == "LINE":
             layer_lines[layer].append(
                 (
@@ -158,9 +165,9 @@ def import_dxf(
                 )
             )
         elif etype == "ARC":
-            layer_arcs[layer].append(_parse_arc_entity(entity, unit_scale))
+            layer_arcs[layer].append(_parse_arc_entity(entity, unit_scale, sign))
         elif etype == "LWPOLYLINE":
-            path = _parse_lwpolyline(entity, unit_scale)
+            path = _parse_lwpolyline(entity, unit_scale, sign)
             if path is not None:
                 paths.append(path)
             else:
@@ -169,16 +176,16 @@ def import_dxf(
             circles.append(
                 CircleGeometry(
                     center=Point(
-                        entity.dxf.center.x * unit_scale, entity.dxf.center.y * unit_scale
+                        sign * entity.dxf.center.x * unit_scale, entity.dxf.center.y * unit_scale
                     ),
                     radius=entity.dxf.radius * unit_scale,
                     source_layer=layer,
                 )
             )
         elif etype in ("TEXT", "MTEXT"):
-            texts.append(_parse_text_entity(entity, unit_scale))
+            texts.append(_parse_text_entity(entity, unit_scale, sign))
         elif etype == "HATCH":
-            hatch = _parse_hatch_entity(entity, unit_scale)
+            hatch = _parse_hatch_entity(entity, unit_scale, sign)
             if hatch is not None:
                 hatches.append(hatch)
             else:
@@ -452,24 +459,49 @@ def _resolve_unit_scale(doc: Drawing, forced_unit: str | None, msp) -> float:
     return _UNIT_TO_MM["mil"] if raw_extent > 500 else 1.0
 
 
+def _ocs_x_sign(entity) -> int | None:
+    """Return 1 or -1 for how an entity's x axis maps onto the drawing x axis.
+
+    Circles, arcs, polylines, text, and hatches store points in an object
+    coordinate system set by their extrusion. Extrusion (0, 0, -1) mirrors x.
+    An extrusion that leaves the XY plane returns None.
+    """
+    if entity.dxftype() not in _PLANAR_TYPES:
+        return 1
+    x, y, z = entity.dxf.get("extrusion", (0.0, 0.0, 1.0))
+    if abs(x) > _EXTRUSION_TOLERANCE or abs(y) > _EXTRUSION_TOLERANCE:
+        return None
+    return 1 if z > 0 else -1
+
+
+def _mirrored_arc(start: float, end: float, sign: int) -> tuple[float, float]:
+    """Return counterclockwise start and end angles after mirroring x when sign is -1."""
+    if sign > 0:
+        return start, end
+    return (180.0 - end) % 360.0, (180.0 - start) % 360.0
+
+
 def _collect_entity_coords(entity, xs: list[float], ys: list[float]) -> None:
     etype = entity.dxftype()
+    sign = _ocs_x_sign(entity)
+    if sign is None:
+        return
     if etype == "LINE":
         xs.extend([entity.dxf.start.x, entity.dxf.end.x])
         ys.extend([entity.dxf.start.y, entity.dxf.end.y])
     elif etype == "CIRCLE":
-        cx, cy = entity.dxf.center.x, entity.dxf.center.y
+        cx, cy = sign * entity.dxf.center.x, entity.dxf.center.y
         r = entity.dxf.radius
         xs.extend([cx - r, cx + r])
         ys.extend([cy - r, cy + r])
     elif etype == "ARC":
-        cx, cy = entity.dxf.center.x, entity.dxf.center.y
+        cx, cy = sign * entity.dxf.center.x, entity.dxf.center.y
         r = entity.dxf.radius
         xs.extend([cx - r, cx + r])
         ys.extend([cy - r, cy + r])
     elif etype == "LWPOLYLINE":
         for x, y, *_ in entity.get_points(format="xyseb"):
-            xs.append(x)
+            xs.append(sign * x)
             ys.append(y)
     elif etype == "SPLINE":
         try:
@@ -480,12 +512,12 @@ def _collect_entity_coords(entity, xs: list[float], ys: list[float]) -> None:
             _logger.warning("Could not extract SPLINE control points: %s", exc)
 
 
-def _parse_arc_entity(entity, unit_scale: float) -> ArcPathSegment:
-    cx = entity.dxf.center.x * unit_scale
+def _parse_arc_entity(entity, unit_scale: float, sign: int) -> ArcPathSegment:
+    cx = sign * entity.dxf.center.x * unit_scale
     cy = entity.dxf.center.y * unit_scale
     radius = entity.dxf.radius * unit_scale
-    start_angle = entity.dxf.start_angle
-    end_angle = start_angle + (entity.dxf.end_angle - start_angle) % 360
+    start_angle, end_angle = _mirrored_arc(entity.dxf.start_angle, entity.dxf.end_angle, sign)
+    end_angle = start_angle + (end_angle - start_angle) % 360
     return ArcPathSegment(
         center=Point(cx, cy),
         radius=radius,
@@ -502,16 +534,16 @@ def _parse_arc_entity(entity, unit_scale: float) -> ArcPathSegment:
     )
 
 
-def _parse_lwpolyline(entity, unit_scale: float) -> ClosedPath | None:
+def _parse_lwpolyline(entity, unit_scale: float, sign: int) -> ClosedPath | None:
     if not entity.closed:
         return None
     raw_points = list(entity.get_points(format="xyseb"))
-    points = [(p[0] * unit_scale, p[1] * unit_scale) for p in raw_points]
-    bulges = [p[4] if len(p) > 4 else 0.0 for p in raw_points]
+    points = [(sign * p[0] * unit_scale, p[1] * unit_scale) for p in raw_points]
+    bulges = [sign * p[4] if len(p) > 4 else 0.0 for p in raw_points]
     return lwpolyline_to_closed_path(points, bulges, entity.dxf.layer)
 
 
-def _parse_text_entity(entity, unit_scale: float) -> TextGeometry:
+def _parse_text_entity(entity, unit_scale: float, sign: int) -> TextGeometry:
     if entity.dxftype() == "MTEXT":
         content = entity.text
         pos = entity.dxf.insert
@@ -522,16 +554,18 @@ def _parse_text_entity(entity, unit_scale: float) -> TextGeometry:
         pos = entity.dxf.insert
         height = entity.dxf.height
         rotation = getattr(entity.dxf, "rotation", 0.0)
+        if sign < 0:
+            rotation = (180.0 - rotation) % 360.0
     return TextGeometry(
         content=content,
-        position=Point(pos.x * unit_scale, pos.y * unit_scale),
+        position=Point(sign * pos.x * unit_scale, pos.y * unit_scale),
         height=height * unit_scale,
         rotation=rotation,
         source_layer=entity.dxf.layer,
     )
 
 
-def _parse_hatch_entity(entity, unit_scale: float) -> DxfHatch | None:
+def _parse_hatch_entity(entity, unit_scale: float, sign: int) -> DxfHatch | None:
     try:
         is_solid = bool(entity.dxf.solid_fill)
     except Exception:
@@ -543,8 +577,8 @@ def _parse_hatch_entity(entity, unit_scale: float) -> DxfHatch | None:
             if hasattr(bpath, "vertices"):
                 verts = list(bpath.vertices)
                 if len(verts) >= 3:
-                    pts = [(v[0] * unit_scale, v[1] * unit_scale) for v in verts]
-                    bulges = [v[2] if len(v) > 2 else 0.0 for v in verts]
+                    pts = [(sign * v[0] * unit_scale, v[1] * unit_scale) for v in verts]
+                    bulges = [sign * v[2] if len(v) > 2 else 0.0 for v in verts]
                     boundary_paths.append(lwpolyline_to_closed_path(pts, bulges, entity.dxf.layer))
             elif hasattr(bpath, "edges"):
                 lines = []
@@ -553,17 +587,21 @@ def _parse_hatch_entity(entity, unit_scale: float) -> DxfHatch | None:
                     if edge.EDGE_TYPE == "LineEdge":
                         lines.append(
                             (
-                                Point(edge.start[0] * unit_scale, edge.start[1] * unit_scale),
-                                Point(edge.end[0] * unit_scale, edge.end[1] * unit_scale),
+                                Point(
+                                    sign * edge.start[0] * unit_scale, edge.start[1] * unit_scale
+                                ),
+                                Point(sign * edge.end[0] * unit_scale, edge.end[1] * unit_scale),
                             )
                         )
                     elif edge.EDGE_TYPE == "ArcEdge":
-                        cx = edge.center[0] * unit_scale
+                        cx = sign * edge.center[0] * unit_scale
                         cy = edge.center[1] * unit_scale
                         radius = edge.radius * unit_scale
-                        sweep = (edge.end_angle - edge.start_angle) % 360 or 360
-                        start_angle = edge.start_angle if edge.ccw else edge.end_angle
-                        end_angle = start_angle + (sweep if edge.ccw else -sweep)
+                        first, last = _mirrored_arc(edge.start_angle, edge.end_angle, sign)
+                        ccw = edge.ccw if sign > 0 else not edge.ccw
+                        sweep = (last - first) % 360 or 360
+                        start_angle = first if ccw else last
+                        end_angle = start_angle + (sweep if ccw else -sweep)
                         arcs.append(
                             ArcPathSegment(
                                 center=Point(cx, cy),
