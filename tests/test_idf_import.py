@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from synthetic import write_emn
+
 from jitxlib.mechanical.importers.idf import import_idf
 from jitxlib.mechanical.models import CircleGeometry, ClosedPath, HolePlating, HolePolicy
 
@@ -134,3 +137,13 @@ IDF_FILE 3.0 "Test" "2024-01-01" 1 "Test" "MM"
 """
     imported = import_idf(str(_write(tmp_path, content)))
     assert isinstance(imported.board_outline, ClosedPath)
+
+
+def test_360_degree_loop_is_center_and_point_on_circle(tmp_path):
+    keepout = ".ROUTE_KEEPOUT ECAD\nALL\n0 10 10 0\n0 11.5 10 360\n.END_ROUTE_KEEPOUT"
+    source = write_emn(tmp_path / "circle.emn", holes=[(2.0, 10, 10, "NPTH")], sections=[keepout])
+    imported = import_idf(str(source))
+    (region,) = imported.regions
+    assert isinstance(region.geometry, CircleGeometry)
+    assert (region.geometry.center.x, region.geometry.center.y) == (10, 10)
+    assert region.geometry.radius == pytest.approx(1.5)

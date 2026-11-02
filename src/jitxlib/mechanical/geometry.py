@@ -266,17 +266,21 @@ def arc_from_chord(
     )
 
 
-def full_circle_from_diameter(
-    start: Point, end: Point, *, layer: str = "", section: str = ""
+def circle_from_center(
+    center: Point, point: Point, *, layer: str = "", section: str = ""
 ) -> CircleGeometry | None:
-    """Interpret an IDF +/-360-degree loop point as a circle with a diameter chord."""
+    """Return the circle an IDF 360-degree loop describes, or None if it has no radius.
 
-    diameter = math.hypot(start.x - end.x, start.y - end.y)
-    if diameter <= 0.0:
+    In IDF, a circle is two loop points: the center, then a point on the circle
+    with an angle of 360 degrees.
+    """
+
+    radius = math.hypot(point.x - center.x, point.y - center.y)
+    if radius <= 0.0:
         return None
     return CircleGeometry(
-        center=Point((start.x + end.x) / 2.0, (start.y + end.y) / 2.0),
-        radius=diameter / 2.0,
+        center=center,
+        radius=radius,
         source_layer=layer,
         source_section=section,
     )

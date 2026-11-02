@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from jitxlib.mechanical.geometry import arc_from_chord, full_circle_from_diameter
+from jitxlib.mechanical.geometry import arc_from_chord, circle_from_center
 from jitxlib.mechanical.models import (
     CircleGeometry,
     ClosedPath,
@@ -324,7 +324,7 @@ class IdfParser:
                         segments.append(LinePathSegment(start=current, end=new_point))
                     current = new_point
                 elif abs(point.angle) == 360.0:
-                    circle = full_circle_from_diameter(current, new_point, section=section)
+                    circle = circle_from_center(current, new_point, section=section)
                     if circle is not None:
                         loop_circles.append(circle)
                     current = new_point
