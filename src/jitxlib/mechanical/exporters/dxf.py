@@ -32,6 +32,17 @@ _ALIGNMENTS = {
 
 
 def validate_output(output: Path, *, overwrite: bool) -> None:
+    """Raise if ``output`` cannot be written with the given overwrite permission.
+
+    Args:
+        output: Destination file.
+        overwrite: Whether an existing file may be replaced.
+
+    Raises:
+        IsADirectoryError: If ``output`` is a directory.
+        FileExistsError: If ``output`` exists, or is a symbolic link, and
+            ``overwrite`` is false.
+    """
     if output.is_dir():
         raise IsADirectoryError(f"DXF output is a directory: {output}")
     if os.path.lexists(output) and not overwrite:
@@ -45,12 +56,27 @@ def write_dxf(
     config: DxfExportConfig | None = None,
     overwrite: bool = False,
 ) -> Path:
-    """Write placed millimeter geometry and return the output Path.
+    """Write placed millimeter geometry to a DXF file.
 
-    Each entity supplies its DXF layer and geometry category. ``config`` selects
-    entities and layer colors; None includes every category. Parent directories
-    are created as needed. An existing output raises FileExistsError unless
-    ``overwrite`` permits replacement. A failed write leaves existing output intact.
+    Missing parent directories are created. The file is written beside the
+    destination and then moved into place, so a failed write leaves an existing
+    output unchanged.
+
+    Args:
+        entities: Geometry to write, each with its DXF layer and category.
+        output: Destination file.
+        config: Selects entities by layer and category and sets layer colors.
+            None includes every entity.
+        overwrite: Whether an existing file may be replaced.
+
+    Returns:
+        The output path.
+
+    Raises:
+        IsADirectoryError: If ``output`` is a directory.
+        FileExistsError: If ``output`` exists and ``overwrite`` is false,
+            including when another process creates it during the write.
+        ValueError: If an entity has unsupported geometry.
     """
     output = Path(output)
     validate_output(output, overwrite=overwrite)
@@ -108,13 +134,27 @@ def export_dxf(
     config: DxfExportConfig | None = None,
     overwrite: bool = False,
 ) -> Path:
-    """Write an already captured RuntimeDesign to DXF and return its output Path.
+    """Write a captured design's board geometry to a millimeter DXF file.
 
-    Capture the design with JITX before calling; this function does not submit
-    or capture it. ``config`` selects layers, categories, and colors; None
-    includes every category. ``output`` may be a string or Path. An existing
-    destination raises FileExistsError unless ``overwrite`` permits replacement.
-    Unsupported selected geometry raises ValueError before the output is replaced.
+    Capture the design with JITX before calling; this function neither submits
+    nor captures it. Geometry is extracted before the file is written, so
+    unsupported geometry leaves an existing output unchanged.
+
+    Args:
+        design: The captured design.
+        output: Destination file.
+        config: Selects layers and geometry categories and sets layer colors.
+            None includes every category.
+        overwrite: Whether an existing file may be replaced.
+
+    Returns:
+        The output path.
+
+    Raises:
+        IsADirectoryError: If ``output`` is a directory.
+        FileExistsError: If ``output`` exists and ``overwrite`` is false.
+        ValueError: If selected geometry is unplaced or cannot be represented in
+            DXF, such as a backdrilled via or a nonuniformly scaled shape.
     """
     from .runtime import extract_design
 

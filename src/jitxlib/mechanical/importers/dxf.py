@@ -69,6 +69,18 @@ _LAYER_PATTERNS: dict[str, list[str]] = {
 
 @dataclass
 class DxfInventory:
+    """Summary of a DXF file's contents, in source units.
+
+    Attributes:
+        filepath: The inspected file.
+        dxf_version: DXF version code, such as "AC1015".
+        units: Declared drawing unit name, or None when the file declares none.
+        layers: Entity count per layer.
+        entity_counts: Entity count per DXF entity type.
+        bounding_box: Minimum and maximum corners, or None when no entity has
+            coordinates.
+    """
+
     filepath: str = ""
     dxf_version: str = ""
     units: str | None = None
@@ -85,11 +97,22 @@ class DxfHatch:
 
 
 def read_dxf(dxf_path: str) -> DxfInventory:
-    """Return entity counts, layers, declared units, and approximate drawing bounds.
+    """Return a summary of a DXF file's layers, entities, declared units, and bounds.
 
-    ``dxf_path`` identifies the file to inspect. Bounds use source coordinates
-    without unit conversion and include only the entity types handled by the
-    coordinate collector; they are not the bounds of the imported Board.
+    Bounds are approximate and in source units. They cover lines, circles, arcs
+    (as full circles), polyline vertices, and spline control points, and are not
+    the bounds of the imported Board.
+
+    Args:
+        dxf_path: The DXF file to inspect.
+
+    Returns:
+        The file summary.
+
+    Raises:
+        OSError: If the file cannot be read or is not a DXF file.
+        ezdxf.DXFStructureError: If the DXF structure is invalid.
+        ValueError: If the file declares an unsupported unit code.
     """
 
     doc = readfile(dxf_path)
@@ -126,13 +149,28 @@ def import_dxf(
     unit: str | None = None,
     hole_policy: HolePolicy | str = HolePolicy.CUTOUT,
 ) -> MechanicalImport:
-    """Return board geometry in millimeters, source metadata, and conversion messages.
+    """Return a DXF drawing's board geometry in millimeters, with conversion messages.
 
-    ``dxf_path`` identifies the source file. ``layer_map`` maps exact layer names
-    to outline, cutout, hole, keepout, soldermask, bend, height, or annotation.
-    Other layers use name heuristics. ``unit`` overrides declared units; without
-    a declaration, scale is inferred and reported. ``hole_policy`` selects Board
-    cutouts or connectable components for circular holes with unknown plating.
+    Layers not named in ``layer_map`` are classified by name. Without declared or
+    overriding units, the scale is inferred and a warning is recorded.
+
+    Args:
+        dxf_path: The DXF file to import.
+        layer_map: Exact layer names mapped to a role: outline, cutout, hole,
+            keepout, soldermask, bend, height, or annotation.
+        unit: Source units overriding the file's declaration: mm, cm, m, in, ft,
+            mil, uin, um, or yd.
+        hole_policy: Whether circular holes, whose plating DXF does not record,
+            become Board cutouts or connectable components.
+
+    Returns:
+        The imported geometry, source metadata, and messages.
+
+    Raises:
+        OSError: If the file cannot be read or is not a DXF file.
+        ezdxf.DXFStructureError: If the DXF structure is invalid.
+        ValueError: If ``unit`` or ``hole_policy`` is not recognized, or the file
+            declares an unsupported unit code.
     """
 
     doc = readfile(dxf_path)

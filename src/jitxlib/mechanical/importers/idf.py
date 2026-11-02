@@ -75,12 +75,26 @@ def import_idf(
     *,
     hole_policy: HolePolicy | str = HolePolicy.CUTOUT,
 ) -> MechanicalImport:
-    """Return IDF 2.0/3.0 board geometry in millimeters and conversion messages.
+    """Return an IDF board file's geometry in millimeters, with conversion messages.
 
-    ``idf_path`` identifies an IDF text file; EMN and IDF-text IDX/BDF filenames
-    use the same parser. XML interchange is unsupported. ``hole_policy`` selects
-    cutouts or connectable components for plated and unknown holes. Known NPTH
-    holes remain cutouts under either policy. No Python modules are written here.
+    Reads IDF 2.0 and 3.0 text, such as EMN board files, whatever the file name
+    suffix. XML interchange files are not supported.
+
+    Args:
+        idf_path: The IDF file to import.
+        hole_policy: Whether plated holes and holes of unknown plating become
+            Board cutouts or connectable components. Unplated holes are always
+            cutouts.
+
+    Returns:
+        The imported geometry, source metadata, and messages.
+
+    Raises:
+        IdfException: If a required section or field is missing, or the file has
+            more than one board outline.
+        ValueError: If ``hole_policy`` is not recognized or a numeric field is not
+            a number.
+        OSError: If the file cannot be read.
     """
 
     parser = IdfParser(idf_path, hole_policy=HolePolicy(hole_policy))
@@ -88,7 +102,7 @@ def import_idf(
 
 
 class IdfParser:
-    """Parser for IDF 2.0/3.0 style EMN, IDF, and compatible IDX files."""
+    """Parser behind `import_idf` for IDF 2.0 and 3.0 text files."""
 
     def __init__(self, filename: str, *, hole_policy: HolePolicy = HolePolicy.CUTOUT):
         self.filename = filename

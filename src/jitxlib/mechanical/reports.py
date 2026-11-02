@@ -12,9 +12,13 @@ from .models import CircleGeometry, ClosedPath, MechanicalImport
 def write_import_report(imported: MechanicalImport, output_path: str) -> None:
     """Write the import's geometry summary and conversion messages as UTF-8 text.
 
-    ``output_path`` selects JSON with a .json suffix and Markdown otherwise.
-    Report coordinates come from ``imported`` before code-generation recentering.
-    An existing report is replaced; its parent directory must already exist.
+    Report coordinates come from ``imported``, before any recentering by code
+    generation. An existing report is replaced.
+
+    Args:
+        imported: The import to report.
+        output_path: Report file. A .json suffix selects JSON; any other suffix
+            selects Markdown. Its parent directory must already exist.
     """
 
     path = Path(output_path)
@@ -25,6 +29,14 @@ def write_import_report(imported: MechanicalImport, output_path: str) -> None:
 
 
 def import_to_markdown(imported: MechanicalImport) -> str:
+    """Return an import report as Markdown.
+
+    Args:
+        imported: The import to report.
+
+    Returns:
+        The report text.
+    """
     lines = [
         "# Mechanical Import Report",
         "",
@@ -131,6 +143,14 @@ def import_to_markdown(imported: MechanicalImport) -> str:
 
 
 def import_to_dict(imported: MechanicalImport) -> dict[str, Any]:
+    """Return an import report as JSON-compatible data.
+
+    Args:
+        imported: The import to report.
+
+    Returns:
+        The report data.
+    """
     return {
         "source_path": imported.source_path,
         "source_format": imported.source_format,

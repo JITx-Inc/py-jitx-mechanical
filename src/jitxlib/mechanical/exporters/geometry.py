@@ -93,7 +93,23 @@ def shape_geometry(
     shape: Shape,
     transform: Transform = IDENTITY,
 ) -> Iterator[tuple[model.Geometry, bool]]:
-    """Yield geometry and whether it is an interior polygon boundary."""
+    """Yield a shape's DXF geometry in millimeters, placed by ``transform``.
+
+    Arcs stay arcs, as polyline bulges, rather than being split into lines.
+
+    Args:
+        shape: The JITX shape to convert.
+        transform: Placement applied on top of the shape's own transform.
+
+    Yields:
+        Pairs of DXF geometry and whether it is an interior polygon boundary (a
+        hole). An empty shape yields nothing.
+
+    Raises:
+        ValueError: If the combined transform is not finite, scales unevenly, or
+            shears, or if the shape is an unsupported type, a circle without a
+            positive radius, or text without a positive height.
+    """
     primitive = shape.to_primitive()
     placement = _Placement(transform * primitive.transform)
     geometry = primitive.geometry
