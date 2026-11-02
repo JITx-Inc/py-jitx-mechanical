@@ -1,6 +1,5 @@
 import importlib.util
 import sys
-from pathlib import Path
 
 import ezdxf
 import pytest
@@ -8,6 +7,7 @@ from jitx import Circuit, Component, Cutout, Pad
 from jitx.feature import Custom
 from jitx.landpattern import PadMapping
 from jitx.sample import SampleDesign
+from synthetic import place_keepout, route_keepout, via_keepout, write_emn
 
 from jitxlib.mechanical import (
     export_dxf,
@@ -24,7 +24,23 @@ from jitxlib.mechanical.models import (
     Point,
 )
 
-FIXTURES = Path(__file__).parent / "fixtures" / "emn"
+
+def _square_cut(tmp_path):
+    return write_emn(tmp_path / "square.emn", outline=(0, 0, 40, 40), cutouts=[(10, 10, 30, 30)])
+
+
+def _features(tmp_path):
+    return write_emn(
+        tmp_path / "features.emn",
+        holes=[(3.2, 5, 5, "PTH"), (2.0, 45, 5, "NPTH")],
+        sections=[
+            place_keepout("TOP", (2, 20, 8, 26)),
+            place_keepout("BOTTOM", (12, 20, 18, 26)),
+            route_keepout("ALL", (20, 2, 24, 6)),
+            via_keepout((26, 2, 30, 6)),
+        ],
+        notes=[(30, 20, 1.5, "SYNTHETIC NOTE")],
+    )
 
 
 def load_code(path, code):
@@ -37,9 +53,9 @@ def load_code(path, code):
     return module
 
 
-@pytest.mark.parametrize("filename", ["squarecut.emn", "board_a.emn", "board_b.emn"])
-def test_generated_boards_translate_with_attached_features(tmp_path, design_context, filename):
-    imported = import_idf(str(FIXTURES / filename))
+@pytest.mark.parametrize("build", [_square_cut, _features], ids=["square_cut", "features"])
+def test_generated_boards_translate_with_attached_features(tmp_path, design_context, build):
+    imported = import_idf(str(build(tmp_path)))
     module = load_code(tmp_path / "generated_board.py", generate_board_module(imported))
     design_cls = type(
         "ImportedDesign", (SampleDesign,), {"board": module.ImportedBoard(), "circuit": Circuit()}
@@ -50,7 +66,7 @@ def test_generated_boards_translate_with_attached_features(tmp_path, design_cont
         assert len(list(design.query(Custom))) == sum(
             r.role not in {"route_keepout", "via_keepout"} for r in imported.regions
         ) + len(imported.annotations)
-        if filename == "squarecut.emn":
+        if build is _square_cut:
             output = export_dxf(design, tmp_path / "square.dxf")
             cutout = next(e for e in ezdxf.readfile(output).modelspace() if e.dxf.layer == "Drill")
             assert cutout.closed
@@ -141,11 +157,14 @@ def test_generated_custom_region_and_rotated_text(tmp_path, design_context):
     assert sanitize_identifier("123 board") == "_123_board"
 
 
-def test_all_unplated_fixture_has_no_components():
-    imported = import_idf(str(FIXTURES / "board_a.emn"), hole_policy="component")
+def test_all_unplated_fixture_has_no_components(tmp_path):
+    holes = [(2.0, x, 5, "NPTH") for x in (5, 15, 25)]
+    imported = import_idf(
+        str(write_emn(tmp_path / "npth.emn", holes=holes)), hole_policy="component"
+    )
     assert not imported.mechanical_components
     assert generate_components_module(imported) == ""
-    assert len(imported.holes) == 66
+    assert len(imported.holes) == 3
     assert all(h.imported_as == "cutout" for h in imported.holes)
 
 

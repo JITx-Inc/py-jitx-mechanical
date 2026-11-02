@@ -1,39 +1,47 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
 
 import ezdxf
 import pytest
+from synthetic import write_dxf
 
 from jitxlib.mechanical.importers.dxf import import_dxf, read_dxf
 from jitxlib.mechanical.models import CircleGeometry, HolePolicy, Point
 
-FIXTURES = Path(__file__).parent / "fixtures" / "dxf"
+SLOTS = [(5, 5, 8, 7), (12, 5, 15, 7), (25, 13, 28, 15), (32, 13, 35, 15)]
 
 
-def test_read_dxf_inventory():
-    inv = read_dxf(str(FIXTURES / "outline_r12.dxf"))
+def test_read_dxf_inventory(tmp_path):
+    source = write_dxf(tmp_path / "r12.dxf", version="R12", outline_as_lines=True, slots=SLOTS)
+    inv = read_dxf(str(source))
     assert inv.dxf_version == "AC1009"
-    assert inv.entity_counts.get("LINE") == 32
-    assert inv.bounding_box is not None
+    assert inv.entity_counts.get("LINE") == 20
+    assert inv.bounding_box == (Point(0, 0), Point(40, 20))
 
 
-def test_dxf_outline_primary_import():
-    imported = import_dxf(str(FIXTURES / "outline_r12.dxf"))
+def test_dxf_outline_primary_import(tmp_path):
+    source = write_dxf(tmp_path / "r12.dxf", version="R12", outline_as_lines=True)
+    imported = import_dxf(str(source))
     assert imported.board_outline is not None
     assert len(imported.board_cutouts) == 0
 
 
-def test_dxf_interior_non_circular_paths_import_as_cutouts():
-    imported = import_dxf(str(FIXTURES / "outline_slots.dxf"))
+def test_dxf_interior_non_circular_paths_import_as_cutouts(tmp_path):
+    imported = import_dxf(str(write_dxf(tmp_path / "slots.dxf", slots=SLOTS)))
     assert imported.board_outline is not None
     assert len(imported.board_cutouts) == 4
 
 
-def test_dxf_interior_circles_default_to_ambiguous_cutouts():
+def test_dxf_interior_circles_default_to_ambiguous_cutouts(tmp_path):
+    source = write_dxf(
+        tmp_path / "flex.dxf",
+        outline_layer="OUTER_PROFILES",
+        circles=[(10, 10, 0.3), (30, 10, 0.27)],
+        circle_layer="INTERIOR_PROFILES",
+    )
     imported = import_dxf(
-        str(FIXTURES / "flex_outline.dxf"),
+        str(source),
         layer_map={"OUTER_PROFILES": "outline", "INTERIOR_PROFILES": "hole"},
     )
     circle_cutouts = [g for g in imported.board_cutouts if isinstance(g, CircleGeometry)]

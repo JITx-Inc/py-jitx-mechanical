@@ -3,7 +3,9 @@ from __future__ import annotations
 import ast
 import subprocess
 import sys
-from pathlib import Path
+
+import pytest
+from synthetic import place_keepout, route_keepout, via_keepout, write_dxf, write_emn
 
 from jitxlib.mechanical.codegen import generate_board_module, generate_components_module
 from jitxlib.mechanical.importers.dxf import import_dxf
@@ -11,12 +13,21 @@ from jitxlib.mechanical.importers.idf import import_idf
 from jitxlib.mechanical.models import HolePolicy
 from jitxlib.mechanical.reports import import_to_markdown, write_import_report
 
-FIXTURES = Path(__file__).parent / "fixtures" / "dxf"
-EMN_FIXTURES = Path(__file__).parent / "fixtures" / "emn"
+HOLES = [(3.2, 5, 5, "PTH"), (3.2, 45, 25, "PTH"), (2.0, 45, 5, "NPTH")]
 
 
-def test_codegen_board_only_no_design_or_circuit():
-    imported = import_dxf(str(FIXTURES / "outline_slots.dxf"))
+@pytest.fixture
+def cutout_emn(tmp_path):
+    return str(write_emn(tmp_path / "cutout.emn", cutouts=[(20, 10, 30, 20)]))
+
+
+@pytest.fixture
+def holes_emn(tmp_path):
+    return str(write_emn(tmp_path / "holes.emn", holes=HOLES))
+
+
+def test_codegen_board_only_no_design_or_circuit(tmp_path):
+    imported = import_dxf(str(write_dxf(tmp_path / "slots.dxf", slots=[(5, 5, 10, 8)])))
     code = generate_board_module(imported, class_name="OutlineBoard")
     ast.parse(code)
     assert "class OutlineBoard(Board):" in code
@@ -28,7 +39,14 @@ def test_codegen_board_only_no_design_or_circuit():
 
 def test_report_includes_messages_and_regions(tmp_path):
     imported = import_dxf(
-        str(FIXTURES / "flex_outline.dxf"),
+        str(
+            write_dxf(
+                tmp_path / "flex.dxf",
+                outline_layer="OUTER_PROFILES",
+                circles=[(10, 10, 0.3), (30, 10, 0.27)],
+                circle_layer="INTERIOR_PROFILES",
+            )
+        ),
         layer_map={"OUTER_PROFILES": "outline", "INTERIOR_PROFILES": "hole"},
     )
     text = import_to_markdown(imported)
@@ -40,15 +58,17 @@ def test_report_includes_messages_and_regions(tmp_path):
 
 
 def test_json_report(tmp_path):
-    imported = import_dxf(str(FIXTURES / "outline_r12.dxf"))
+    imported = import_dxf(
+        str(write_dxf(tmp_path / "r12.dxf", version="R12", outline_as_lines=True))
+    )
     report = tmp_path / "report.json"
     write_import_report(imported, str(report))
     assert '"source_format": "dxf"' in report.read_text()
 
 
-def test_codegen_from_emn_fixture():
-    """Codegen on a real EMN file produces a syntactically valid Board module."""
-    imported = import_idf(str(EMN_FIXTURES / "squarecut.emn"))
+def test_codegen_from_emn_fixture(cutout_emn):
+    """Codegen on an EMN file produces a syntactically valid Board module."""
+    imported = import_idf(cutout_emn)
     code = generate_board_module(imported, class_name="SquareCutBoard")
     ast.parse(code)
     assert "class SquareCutBoard(Board):" in code
@@ -57,7 +77,7 @@ def test_codegen_from_emn_fixture():
     assert "from jitx.board import Board" in code
 
 
-def test_cli_import_emn_end_to_end(tmp_path):
+def test_cli_import_emn_end_to_end(tmp_path, cutout_emn):
     """`jitx-mechanical import board.emn` produces a valid Python module and report."""
     output = tmp_path / "board.py"
     report = tmp_path / "board.report.md"
@@ -67,7 +87,7 @@ def test_cli_import_emn_end_to_end(tmp_path):
             "-m",
             "jitxlib.mechanical.cli",
             "import",
-            str(EMN_FIXTURES / "squarecut.emn"),
+            cutout_emn,
             "-o",
             str(output),
             "--report",
@@ -88,16 +108,16 @@ def test_cli_import_emn_end_to_end(tmp_path):
     assert "from jitx.board import Board" in code
 
 
-def test_components_module_empty_when_policy_cutout():
+def test_components_module_empty_when_policy_cutout(holes_emn):
     """Default (cutout) policy yields no mechanical components, so codegen returns ''."""
-    imported = import_idf(str(EMN_FIXTURES / "board_a.emn"))
+    imported = import_idf(holes_emn)
     assert imported.mechanical_components == []
     assert generate_components_module(imported) == ""
 
 
-def test_components_module_emits_real_component_classes():
+def test_components_module_emits_real_component_classes(holes_emn):
     """--hole-policy component produces Component classes with through-hole pads."""
-    imported = import_idf(str(EMN_FIXTURES / "board_b.emn"), hole_policy=HolePolicy.COMPONENT)
+    imported = import_idf(holes_emn, hole_policy=HolePolicy.COMPONENT)
     assert imported.mechanical_components, "expected mechanical components in this fixture"
 
     code = generate_components_module(imported)
@@ -128,9 +148,9 @@ def test_components_module_emits_real_component_classes():
     assert '"plating":' not in code
 
 
-def test_board_module_points_to_companion_when_components_present():
+def test_board_module_points_to_companion_when_components_present(holes_emn):
     """When components are detected the Board file references the companion module."""
-    imported = import_idf(str(EMN_FIXTURES / "board_b.emn"), hole_policy=HolePolicy.COMPONENT)
+    imported = import_idf(holes_emn, hole_policy=HolePolicy.COMPONENT)
     code = generate_board_module(imported, class_name="MyBoard")
     ast.parse(code)
     assert "_components.py" in code
@@ -139,7 +159,7 @@ def test_board_module_points_to_companion_when_components_present():
     assert "MECHANICAL_COMPONENTS = [" not in code
 
 
-def test_cli_emits_components_file_with_component_policy(tmp_path):
+def test_cli_emits_components_file_with_component_policy(tmp_path, holes_emn):
     """End-to-end: CLI writes a syntactically valid `_components.py` companion."""
     output = tmp_path / "example_board.py"
     result = subprocess.run(
@@ -148,7 +168,7 @@ def test_cli_emits_components_file_with_component_policy(tmp_path):
             "-m",
             "jitxlib.mechanical.cli",
             "import",
-            str(EMN_FIXTURES / "board_b.emn"),
+            holes_emn,
             "-o",
             str(output),
             "--class-name",
@@ -171,7 +191,7 @@ def test_cli_emits_components_file_with_component_policy(tmp_path):
     assert "class MechanicalComponentsCircuit(Circuit):" in code
 
 
-def test_cli_skips_components_file_with_cutout_policy(tmp_path):
+def test_cli_skips_components_file_with_cutout_policy(tmp_path, holes_emn):
     """Default cutout policy: no companion file is created."""
     output = tmp_path / "board.py"
     result = subprocess.run(
@@ -180,7 +200,7 @@ def test_cli_skips_components_file_with_cutout_policy(tmp_path):
             "-m",
             "jitxlib.mechanical.cli",
             "import",
-            str(EMN_FIXTURES / "board_a.emn"),
+            holes_emn,
             "-o",
             str(output),
             "--class-name",
@@ -197,43 +217,58 @@ def test_cli_skips_components_file_with_cutout_policy(tmp_path):
 
 
 def test_board_features_from_regions_and_notes(tmp_path):
-    """Real EMN keepouts and notes land as KeepOut/Custom features on the Board."""
-    imported = import_idf(str(EMN_FIXTURES / "board_a.emn"))
+    """EMN placement keepouts and notes land as Custom features on the Board."""
+    source = write_emn(
+        tmp_path / "features.emn",
+        sections=[place_keepout("TOP", (2, 2, 8, 8))],
+        notes=[(10, 10, 1.5, "MOUNTING SIDE")],
+    )
+    imported = import_idf(str(source))
     code = generate_board_module(imported, class_name="ExampleBoard")
     ast.parse(code)
 
     assert "Custom" in code
     assert "    def __init__(self):" in code
     assert "        super().__init__()" in code
-    # board_a has place_keepouts and notes (no route/via keepouts).
+    # Placement keepouts and notes only; no route or via keepouts.
     assert "Custom(" in code
     assert "PlaceKeepout" in code
     assert 'name="Note"' in code
     assert "Text(" in code
-    # No KeepOut on this fixture (no route/via keepouts) → no LayerSet import either.
+    # No route/via keepouts, so no KeepOut and no LayerSet import.
     assert "KeepOut(" not in code
     assert "from jitx.layerindex import LayerSet" not in code
 
 
-def test_board_features_route_and_via_keepouts():
-    """Route + via keepouts on the big fixture become KeepOut features with the right kwarg."""
-    imported = import_idf(str(EMN_FIXTURES / "board_b.emn"))
+def test_board_features_route_and_via_keepouts(tmp_path):
+    """Route and via keepouts become KeepOut features with the right kwarg."""
+    source = write_emn(
+        tmp_path / "keepouts.emn",
+        sections=[
+            route_keepout("TOP", (2, 2, 4, 4)),
+            route_keepout("BOTTOM", (6, 2, 8, 4)),
+            route_keepout("ALL", (10, 2, 12, 4)),
+            via_keepout((2, 6, 4, 8)),
+            via_keepout((6, 6, 8, 8)),
+            place_keepout("TOP", (14, 2, 16, 4)),
+        ],
+    )
+    imported = import_idf(str(source))
     code = generate_board_module(imported, class_name="BigBoard")
     ast.parse(code)
 
     assert "KeepOut, Custom" in code
     assert "from jitx.layerindex import LayerSet" in code
 
-    # board_b: 2521 route_keepout + 126 via_keepout = 2647 KeepOut features total.
-    assert code.count("KeepOut(") == 2647
-    # All keepouts carry exactly one of route=True / via=True.
-    assert code.count("route=True") == 2521
-    assert code.count("via=True") == 126
+    assert code.count("KeepOut(") == 5
+    # Each keepout carries exactly one of route=True / via=True.
+    assert code.count("route=True") == 3
+    assert code.count("via=True") == 2
 
 
-def test_board_features_omitted_when_no_regions_or_notes():
-    """Fixture with no regions / notes → no __init__ block, no feature imports."""
-    imported = import_idf(str(EMN_FIXTURES / "squarecut.emn"))
+def test_board_features_omitted_when_no_regions_or_notes(tmp_path):
+    """A board with no regions or notes gets no __init__ block or feature imports."""
+    imported = import_idf(str(write_emn(tmp_path / "plain.emn")))
     assert not imported.regions
     assert not imported.annotations
     imported.board_cutouts.clear()
@@ -258,7 +293,7 @@ def test_layer_string_mapping():
     assert _layer_string_to_layerset("WAT") == "LayerSet.all()"
 
 
-def test_cli_inspect_emn(tmp_path):
+def test_cli_inspect_emn(holes_emn):
     """`jitx-mechanical inspect board.emn` prints a summary without error."""
     result = subprocess.run(
         [
@@ -266,7 +301,7 @@ def test_cli_inspect_emn(tmp_path):
             "-m",
             "jitxlib.mechanical.cli",
             "inspect",
-            str(EMN_FIXTURES / "board_a.emn"),
+            holes_emn,
         ],
         capture_output=True,
         text=True,

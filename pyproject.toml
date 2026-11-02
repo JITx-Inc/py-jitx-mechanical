@@ -43,7 +43,6 @@ Source = "https://github.com/JITx-Inc/py-jitx-mechanical"
 Documentation = "https://docs.jitx.com/"
 
 [tool.hatch.build.targets.sdist]
-# Real-board test fixtures have redistribution restrictions.
 include = ["/src", "/README.md", "/LICENSE", "/pyproject.toml"]
 core-metadata-version = "2.4"
 
