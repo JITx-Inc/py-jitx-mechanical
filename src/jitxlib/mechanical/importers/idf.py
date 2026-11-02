@@ -30,6 +30,8 @@ from jitxlib.mechanical.models import (
 logger = logging.getLogger(__name__)
 
 _UNIT_TO_MM = {"MM": 1.0, "THOU": 0.0254}
+_ROUTING_LAYERS = frozenset({"TOP", "BOTTOM", "BOTH", "INNER", "ALL"})
+_BOARD_SIDES = frozenset({"TOP", "BOTTOM", "BOTH"})
 _CLOSURE_EPSILON = 1e-6
 
 
@@ -127,26 +129,28 @@ class IdfParser:
                         board_outlines.append(outline)
                 i = i + 1 + end_pos + 1
             elif token == ".OTHER_OUTLINE":
+                # owner, identifier, thickness, board side
                 i = self._parse_outline_region(
-                    tokens, i, ".END_OTHER_OUTLINE", "other_outline", skip=4
+                    tokens, i, "other_outline", skip=4, layers_at=3, thickness_at=2
                 )
             elif token == ".ROUTE_OUTLINE":
-                i = self._parse_outline_region(
-                    tokens, i, ".END_ROUTE_OUTLINE", "route_outline", skip=2
-                )
+                # owner, routing layers
+                i = self._parse_outline_region(tokens, i, "route_outline", skip=2, layers_at=1)
             elif token == ".PLACE_OUTLINE":
+                # owner, board side, height
                 i = self._parse_outline_region(
-                    tokens, i, ".END_PLACE_OUTLINE", "place_outline", skip=3, has_thickness=True
+                    tokens, i, "place_outline", skip=3, layers_at=1, thickness_at=2
                 )
             elif token == ".ROUTE_KEEPOUT":
-                i = self._parse_outline_region(
-                    tokens, i, ".END_ROUTE_KEEPOUT", "route_keepout", skip=2
-                )
+                # owner, routing layers
+                i = self._parse_outline_region(tokens, i, "route_keepout", skip=2, layers_at=1)
             elif token == ".VIA_KEEPOUT":
-                i = self._parse_outline_region(tokens, i, ".END_VIA_KEEPOUT", "via_keepout", skip=1)
+                # owner; via keepouts apply to every layer
+                i = self._parse_outline_region(tokens, i, "via_keepout", skip=1)
             elif token == ".PLACE_KEEPOUT":
+                # owner, board side, height
                 i = self._parse_outline_region(
-                    tokens, i, ".END_PLACE_KEEPOUT", "place_keepout", skip=3, has_thickness=True
+                    tokens, i, "place_keepout", skip=3, layers_at=1, thickness_at=2
                 )
             elif token == ".DRILLED_HOLES":
                 end_pos = self._find_section_end(tokens[i + 1 :], ".END_DRILLED_HOLES")
@@ -250,19 +254,29 @@ class IdfParser:
         self,
         tokens: list[str],
         i: int,
-        end_marker: str,
         role: str,
         *,
         skip: int,
-        has_thickness: bool = False,
+        layers_at: int | None = None,
+        thickness_at: int | None = None,
     ) -> int:
-        end_pos = self._find_section_end(tokens[i + 1 :], end_marker)
+        end_pos = self._find_section_end(tokens[i + 1 :], ".END_" + tokens[i][1:])
         section_tokens = tokens[i + 1 : i + 1 + end_pos]
         owner = section_tokens[0] if section_tokens else ""
-        layers = section_tokens[1] if len(section_tokens) > 1 else ""
+        layers = ""
+        if layers_at is not None and len(section_tokens) > layers_at:
+            layers = section_tokens[layers_at].upper()
+            routing = role.startswith("route")
+            if layers not in (_ROUTING_LAYERS if routing else _BOARD_SIDES):
+                fallback = "all layers" if routing else "both board sides"
+                self.result.warn(
+                    f"Unknown {tokens[i]} layer {section_tokens[layers_at]!r}; using {fallback}",
+                    source=tokens[i],
+                )
+                layers = "ALL" if routing else "BOTH"
         thickness = 0.0
-        if has_thickness and len(section_tokens) > 2:
-            thickness = float(section_tokens[2]) * self.ucnv
+        if thickness_at is not None and len(section_tokens) > thickness_at:
+            thickness = float(section_tokens[thickness_at]) * self.ucnv
         geometries = self._points_to_geometries(
             self._parse_loop_points(section_tokens[skip:]), tokens[i]
         )
