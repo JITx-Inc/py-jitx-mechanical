@@ -1,7 +1,7 @@
 # jitxlib-mechanical
 
 Import mechanical board drawings into JITX Python and export captured designs to
-DXF. Requires Python 3.12+ and JITX 4.4.2 or later within version 4.
+DXF. Requires Python 3.12+ and JITX 4.6 (4.6.0rc10 or later, below 4.7).
 
 Support is provided on a best-effort basis. Pin a package version for reproducible
 builds.
@@ -93,7 +93,7 @@ The import command remains `jitx-mechanical`; `python -m jitxlib.mechanical` is
 also supported.
 
 ```bash
-pip install --extra-index-url https://pypi.jitx.com/jitx/main/+simple -e '.[dev]' 'jitx==4.4.2'
+pip install --extra-index-url https://pypi.jitx.com/jitx/main/+simple -e '.[dev]' 'jitx==4.6.0rc10' 'jitxcore==4.6.0rc3'
 pytest -q
 ruff check src tests
 ruff format --check src tests
@@ -103,5 +103,7 @@ python -m twine check dist/*
 ```
 
 The normal suite translates designs without launching JITX. The runtime capture
-test is opt-in: set `JITX_MECHANICAL_RUNTIME_URI` to a running stable runtime's
-websocket URI and run `pytest tests/test_runtime_capture.py -q`.
+test is opt-in: set `JITX_MECHANICAL_RUNTIME_URI` to a running 4.6 runtime's
+websocket URI and run `pytest tests/test_runtime_capture.py -q`. `jitx runtime start
+--bg` prints the URI. The [4.6 validation record](docs/validation-4.6.md) lists
+the tested versions and the remaining release gates.

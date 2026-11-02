@@ -14,7 +14,8 @@ authors = [
     {name = "JITX Inc."}
 ]
 dependencies = [
-    "jitx>=4.4.2,<5",
+    "jitx>=4.6.0rc10,<4.7",
+    "jitxcore>=4.6.0rc3,<4.7",
     "ezdxf>=1.4,<2",
 ]
 keywords = ["jitx", "pcb", "eda", "dxf", "emn", "idf", "idx", "mechanical"]
@@ -59,6 +60,11 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+filterwarnings = [
+    "error::DeprecationWarning",
+    "error::PendingDeprecationWarning",
+    'error:design\.(nets|layers)\(\) is deprecated:RuntimeWarning',
+]
 
 [tool.ruff]
 line-length = 100

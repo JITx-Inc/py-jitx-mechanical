@@ -54,9 +54,8 @@ def test_generated_boards_translate_with_attached_features(tmp_path, design_cont
             output = export_dxf(design, tmp_path / "square.dxf")
             cutout = next(e for e in ezdxf.readfile(output).modelspace() if e.dxf.layer == "Drill")
             assert cutout.closed
-            assert list(cutout.get_points("xy")) == pytest.approx(
-                [(-10, -10), (10, -10), (10, 10), (-10, 10)]
-            )
+            expected = [(-10, -10), (10, -10), (10, 10), (-10, 10)]
+            assert list(cutout.get_points("xy")) == [pytest.approx(p) for p in expected]
 
 
 @pytest.mark.parametrize("recenter", [False, True])
@@ -116,7 +115,7 @@ IDF_FILE 3.0 "Test" "2026-01-01" 1 "Board" "MM"
         (12 - offset, 13 - offset),
     ]
     actual = sorted(tuple(e.dxf.center)[:2] for e in circles)
-    assert actual == pytest.approx(sorted(expected))
+    assert actual == [pytest.approx(p) for p in sorted(expected)]
     assert sorted(e.dxf.radius for e in circles) == [1, 1, 1, 1.5]
 
 

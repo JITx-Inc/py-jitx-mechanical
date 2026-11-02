@@ -1,11 +1,11 @@
-"""Live capture gate; run explicitly against a stable JITX runtime."""
+"""Live capture gate; run explicitly against a running JITX 4.6 runtime."""
 
 import os
 
 import ezdxf
 import jitx
 import pytest
-from jitx import Board, Circuit, Component, Copper, Cutout, Net, Port, Side
+from jitx import Board, Circuit, Component, Copper, Cutout, Net, Port, Pour, Side
 from jitx.landpattern import Landpattern, Pad
 from jitx.sample import SampleDesign, SampleSubstrate
 from jitx.shapes.composites import rectangle
@@ -73,3 +73,48 @@ def test_live_submit_capture_export(tmp_path):
     copper = list(doc.modelspace().query('LWPOLYLINE[layer=="Copper_Top"]'))
     assert len(copper) == 1
     assert list(copper[0].get_points("xy")) == [(0, 0), (3, 0), (3, 3), (0, 3)]
+
+
+class MaskedVia(SampleSubstrate.THVia):
+    tented = Side.Top
+
+
+class PourCircuit(Circuit):
+    def __init__(self):
+        self.via = SampleSubstrate.THVia().at(0, 0)
+        self.pour = Pour(rectangle(2, 2), layer=0)
+        self.gnd = Net([self.via, self.pour])
+
+
+class MaskCircuit(Circuit):
+    def __init__(self):
+        self.via = MaskedVia().at(1, 2)
+        self.signal = Net([self.via])
+
+
+class FrameCircuit(Circuit):
+    def __init__(self):
+        self.pour = PourCircuit().at(5, 3)
+        self.mask = MaskCircuit().at(-5, -3, on=Side.Bottom)
+
+
+class FrameDesign(SampleDesign):
+    board = CaptureBoard()
+    circuit = FrameCircuit()
+
+
+def test_live_placed_circuits_keep_pours_and_via_masks_in_place(tmp_path):
+    with jitx.runtime(uri=URI) as runtime:
+        design = runtime.submit(FrameDesign)
+        design.capture()
+        output = export_dxf(design, tmp_path / "frames.dxf")
+    msp = ezdxf.readfile(output).modelspace()
+    pours = list(msp.query('LWPOLYLINE[layer=="Copper_Top"]'))
+    assert pours
+    for x, y in (point for pour in pours for point in pour.get_points("xy")):
+        assert 4 - 1e-6 <= x <= 6 + 1e-6 and 2 - 1e-6 <= y <= 4 + 1e-6
+    assert not msp.query('CIRCLE[layer=="Soldermask_Top"]')
+    (mask,) = msp.query('CIRCLE[layer=="Soldermask_Bottom"]')
+    drills = {tuple(h.dxf.center)[:2] for h in msp.query('CIRCLE[layer=="Drill"]')}
+    assert tuple(mask.dxf.center)[:2] in drills
+    assert tuple(mask.dxf.center)[:2] != (5, 3)
