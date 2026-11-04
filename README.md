@@ -1,7 +1,7 @@
 # jitxlib-mechanical
 
 Import mechanical board drawings into JITX Python and export captured designs to
-DXF. Requires Python 3.12+ and JITX 4.6.
+DXF. Requires Python 3.12+ and JITX 4.6 or a later 4.x release.
 
 Support is provided on a best-effort basis. Pin a package version for reproducible
 builds.
