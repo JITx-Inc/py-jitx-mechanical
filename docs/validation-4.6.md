@@ -24,7 +24,7 @@ installation root. The default runtime was not changed.
 
 ## Dependency bounds
 
-`jitx>=4.6.0,<4.7` and `jitxcore>=4.6.0,<4.7` admit only final releases. A floor
+`jitx>=4.6.0,<5` and `jitxcore>=4.6.0,<5` admit only final releases. A floor
 that names a pre-release would also let pip select later pre-releases and the
 `.devN` builds on the JITX main feed.
 
