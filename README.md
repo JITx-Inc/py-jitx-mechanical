@@ -110,15 +110,29 @@ the tested versions and the remaining release gates.
 
 ## Release
 
-Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yaml`. It checks
-formatting, types, and tests on Python 3.12, 3.13, and 3.14 with the
-organization's `pybuild-action`. It then publishes the wheel and sdist built on
-Python 3.12 to `https://pypi.jitx.com/jitx/main` and creates a GitHub release.
-The package version comes from the tag. A manual run of the workflow publishes
-only when started from a tag; nothing else publishes.
+Two workflows build and publish the package. A `vX.Y.Z` tag sets the package
+version; every other build gets a `.dev` version.
 
-The workflow uses the organization secrets `GITHUBAPP_CLIENT_ID`,
-`GITHUBAPP_PRIVATE_KEY`, and `HATCH_INDEX_AUTH` and the variable
+`.github/workflows/build.yaml` runs the organization's `pybuild-action` on
+Python 3.12, 3.13, and 3.14 for pull requests, pushes to `main` and `develop`,
+and `vX.Y.Z` tags. It checks formatting, types, and tests, then builds the wheel
+and sdist. When those pass, it publishes the Python 3.12 build:
+
+- Pull requests and `develop` publish to `https://pypi.jitx.com/jitx/unstable`.
+- `main` and `vX.Y.Z` tags publish to `https://pypi.jitx.com/jitx/main`.
+
+A `vX.Y.Z` tag also creates a GitHub release with the wheel, the sdist, and a
+`requirements.txt` of the resolved dependencies attached.
+
+`.github/workflows/release.yaml` (Publish to PyPI) publishes a release to
+pypi.org. Run it manually from the `vX.Y.Z` tag once the build for that tag has
+created the GitHub release. It downloads the release's wheel and sdist and
+uploads them with PyPI trusted publishing.
+
+The build workflow uses the organization secrets `GITHUBAPP_CLIENT_ID`,
+`GITHUBAPP_PRIVATE_KEY`, `HATCH_INDEX_AUTH`, and `SLACK_TOKEN` and the variable
 `HATCH_INDEX_USER`. An organization owner must grant this repository access to
-them before the first release. The workflow's first job names any it cannot read.
+them. Before the first PyPI release, the `jitxlib-mechanical` project on pypi.org
+must list this repository's `release.yaml` workflow and `pypi` environment as a
+trusted publisher.
 

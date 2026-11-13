@@ -54,7 +54,7 @@ core-metadata-version = "2.4"
 source = "vcs"
 fallback-version = "0.0.0+undefined"
 
-# Environments run by jitx-inc/pybuild-action in the release workflow:
+# Environments run by jitx-inc/pybuild-action in the build workflow:
 # "hatch fmt --check", "hatch run types:check", and "hatch test --cover".
 [tool.hatch.envs.hatch-static-analysis]
 dependencies = ["ruff>=0.15"]
