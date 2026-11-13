@@ -11,7 +11,7 @@ jobs:
 
     environment:
       name: pypi
-      url: https://pypi.org/p/jitx
+      url: https://pypi.org/p/jitxlib-mechanical
 
     permissions:
       contents: read   # for reading content from a repo
