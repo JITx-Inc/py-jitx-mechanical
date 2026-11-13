@@ -30,37 +30,32 @@ jobs:
 
     steps:
 
+      # set up token and permissions
+      - name: Generate an app token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          owner: "JITX-Inc"
+          # repositories: # unset means all when specifying "owner"
+          client-id: ${{ secrets.GITHUBAPP_CLIENT_ID }}
+          private-key: ${{ secrets.GITHUBAPP_PRIVATE_KEY }}
+          #permission-contents: write  # for committing content to a repo
+          #permission-actions: read    # for reading artifacts from actions
+
+      # extra checkout step for pybuild-action
+      # since pybuild-action is private and this repo is public
+      - name: Check out pybuild-action
+        uses: actions/checkout@v6
+        with:
+          repository: jitx-inc/pybuild-action
+          ref: v1
+          token: ${{ steps.app-token.outputs.token }}
+          path: ./pybuild-action
+
       - name: Build, Test, and Deploy
-        # Pinned, NOT @v1: @v1 still points at c903e40, which predates the
-        # `run-internal-test-designs` input, and an input the pinned version
-        # does not declare is a hard "unexpected input" error. So the pin and
-        # the input move in the SAME commit. @v1 moves only once this has been
-        # stable across the repos that use it.
-        #
-        # v1.0.54, NOT v1.0.53. Both carry the gate, but .53 overlays this repo
-        # with `pip install -e --no-deps`, leaving the jitxcore that
-        # internal-test-designs resolved (4.4.x, via jitx 4.4.0) underneath a
-        # jitx that requires jitxcore>=4.5.0a. .54 resolves the overlay's deps.
-        uses: jitx-inc/pybuild-action@v1.0.54
+        uses: ./pybuild-action  # from checkout above
         with:
            python-version: "${{ matrix.python-version }}"
-           # Run internal-test-designs' reverse-flow FAST group (303 tests,
-           # ~50s per leg, no JITX runtime) against this PR's jitx rather than
-           # the published one. It covers the Capture/linker round trip that
-           # nothing in this repo's own suite exercises, so a break here used to
-           # surface only in internal-test-designs' nightly -- against a
-           # published build, with no PR to attribute it to.
-           #
-           # githubapp-client-id / githubapp-private-key below are required for
-           # this: internal-test-designs is private and GITHUB_TOKEN cannot read
-           # it. This repo already passed both.
-           run-internal-test-designs: true
-           # PIN the suite. The action's default for this is `main`, which
-           # floats: a commit to internal-test-designs would turn this repo's
-           # PRs red for a reason unrelated to the PR, and nothing in the
-           # failure would say so. internal-test-designs carries no tags yet,
-           # so this is a SHA; swap it for a tag once one exists.
-           internal-test-designs-ref: "ab9f1e0fc14c8f8505bb60d0064e53e657ca1988"
            run-publish: true
            hatch-index-user: ${{ vars.HATCH_INDEX_USER }}
            hatch-index-auth: ${{ secrets.HATCH_INDEX_AUTH }}
