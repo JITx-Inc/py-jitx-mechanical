@@ -1,102 +1,64 @@
-name: Release
 
-# Publishes to pypi.jitx.com/jitx/main only when run for a vX.Y.Z tag.
+name: Publish to PyPI
+
 on:
-  push:
-    tags:
-      - "v*.*.*"
   workflow_dispatch:
 
 jobs:
-  settings:
-    name: Check release settings
-    if: startsWith(github.ref, 'refs/tags/v')
+  publish:
+    name: Publish ${{ github.ref_name }} to PyPI
     runs-on: ubuntu-24.04
+
+    environment:
+      name: pypi
+      url: https://pypi.org/p/jitx
+
     permissions:
-      contents: read
+      contents: read   # for reading content from a repo
+      id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
+
     steps:
-      - name: Check organization secrets and variables
-        env:
-          GITHUBAPP_CLIENT_ID: ${{ secrets.GITHUBAPP_CLIENT_ID }}
-          GITHUBAPP_PRIVATE_KEY: ${{ secrets.GITHUBAPP_PRIVATE_KEY }}
-          HATCH_INDEX_AUTH: ${{ secrets.HATCH_INDEX_AUTH }}
-          HATCH_INDEX_USER: ${{ vars.HATCH_INDEX_USER }}
+
+      - name: Ensure valid tag
+        if: (! github.ref_type == 'tag') || (! startsWith(github.ref_name, 'v')) || contains(github.ref_name, '.dev')
+        shell: bash
         run: |
-          missing=()
-          for name in GITHUBAPP_CLIENT_ID GITHUBAPP_PRIVATE_KEY HATCH_INDEX_AUTH HATCH_INDEX_USER; do
-            [ -n "${!name}" ] || missing+=("$name")
-          done
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::${GITHUB_REPOSITORY} cannot read ${missing[*]}. An organization owner must add ${GITHUB_REPOSITORY} to the repository access of each under Organization settings > Secrets and variables > Actions. Then rerun this workflow."
+          echo "Invalid tag for publishing: ${{ github.ref_name }}"
+          exit -1
+
+      - name: Fetch Release
+        uses: robinraju/release-downloader@v1
+        with:
+          repository: ${{ github.repository }}
+          tag: ${{ github.ref_name }}
+          fileName: '*'
+          out-file-path: dist/
+          extract: false
+
+      - name: List artifact files
+        shell: bash
+        run: |
+            ls -la dist/ || true
+            rm -f dist/requirements.txt
+
+      - name: Check for PRELIM strings in dist/
+        shell: bash
+        run: |
+          PRELIM_MATCHES=$(grep -rn "PRELIM" --exclude-dir=.git --exclude-dir=.github dist/ 2>/dev/null || true)
+          if [ -n "$PRELIM_MATCHES" ]; then
+            while IFS= read -r match; do
+              FILE=$(echo "$match" | cut -d: -f1)
+              LINENO=$(echo "$match" | cut -d: -f2)
+              TEXT=$(echo "$match" | cut -d: -f3-)
+              echo "::error file=${FILE},line=${LINENO}::PRELIM string found in dist/: ${TEXT}"
+            done <<< "$PRELIM_MATCHES"
+            echo "ERROR: PRELIM strings found in dist/ — aborting publish to PyPI"
+            echo "$PRELIM_MATCHES"
             exit 1
           fi
 
-  verify:
-    name: Test on Python ${{ matrix.python-version }}
-    needs: settings
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    strategy:
-      matrix:
-        python-version: ["3.13", "3.14"]
-    steps:
-      - name: Generate an app token
-        id: app-token
-        uses: actions/create-github-app-token@v3
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          owner: "JITX-Inc"
-          client-id: ${{ secrets.GITHUBAPP_CLIENT_ID }}
-          private-key: ${{ secrets.GITHUBAPP_PRIVATE_KEY }}
-
-      # pybuild-action is private and this repository is public.
-      - name: Check out pybuild-action
-        uses: actions/checkout@v6
-        with:
-          repository: jitx-inc/pybuild-action
-          ref: v1
-          token: ${{ steps.app-token.outputs.token }}
-          path: ./pybuild-action
-
-      - name: Lint, type-check, test, and build
-        uses: ./pybuild-action
-        with:
-          python-version: ${{ matrix.python-version }}
-          run-publish: false
-          run-github-release-on-tag: false
-          run-internal-test-designs: false
-
-  publish:
-    name: Publish from Python 3.12
-    needs: verify
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - name: Generate an app token
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          owner: "JITX-Inc"
-          client-id: ${{ secrets.GITHUBAPP_CLIENT_ID }}
-          private-key: ${{ secrets.GITHUBAPP_PRIVATE_KEY }}
-
-      - name: Check out pybuild-action
-        uses: actions/checkout@v6
-        with:
-          repository: jitx-inc/pybuild-action
-          ref: v1
-          token: ${{ steps.app-token.outputs.token }}
-          path: ./pybuild-action
-
-      - name: Lint, type-check, test, build, and publish
-        uses: ./pybuild-action
-        with:
-          python-version: "3.12"
-          run-publish: true
-          run-internal-test-designs: false
-          hatch-index-user: ${{ vars.HATCH_INDEX_USER }}
-          hatch-index-auth: ${{ secrets.HATCH_INDEX_AUTH }}
-          # The action creates the GitHub release with this app's token.
-          githubapp-client-id: ${{ secrets.GITHUBAPP_CLIENT_ID }}
-          githubapp-private-key: ${{ secrets.GITHUBAPP_PRIVATE_KEY }}
+          repository-url: "https://upload.pypi.org/legacy/"
+          packages-dir: dist/
