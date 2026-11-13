@@ -56,6 +56,7 @@ jobs:
         uses: ./pybuild-action  # from checkout above
         with:
            python-version: "${{ matrix.python-version }}"
+           run-internal-test-designs: false
            run-publish: true
            hatch-index-user: ${{ vars.HATCH_INDEX_USER }}
            hatch-index-auth: ${{ secrets.HATCH_INDEX_AUTH }}
