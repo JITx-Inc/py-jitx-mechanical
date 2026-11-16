@@ -177,7 +177,8 @@ class IdfParser:
                 i = i + 1 + end_pos + 1
             elif token == ".PLACEMENT":
                 end_pos = self._find_section_end(tokens[i + 1 :], ".END_PLACEMENT")
-                self._parse_placement(tokens[i + 1 : i + 1 + end_pos])
+                version = self.header.idf_version if self.header else 3.0
+                self._parse_placement(tokens[i + 1 : i + 1 + end_pos], version)
                 i = i + 1 + end_pos + 1
             elif token.startswith(".") and not token.startswith(".END_"):
                 i = self._skip_unknown_section(tokens, i, token)
@@ -484,9 +485,12 @@ class IdfParser:
         if i < len(tokens):
             self.result.warn(f"NOTES has {len(tokens) - i} trailing token(s)", source=".NOTES")
 
-    def _parse_placement(self, tokens: list[str]) -> None:
+    def _parse_placement(self, tokens: list[str], idf_version: float) -> None:
+        # IDF 3.0 adds a mounting offset between Y and the rotation.
+        record_size = 8 if idf_version < 3.0 else 9
+        rotation_at = 5 if idf_version < 3.0 else 6
         i = 0
-        while i + 8 < len(tokens):
+        while i + record_size - 1 < len(tokens):
             self.result.placements.append(
                 MechanicalPlacement(
                     package=tokens[i],
@@ -495,13 +499,13 @@ class IdfParser:
                     pose=Pose(
                         float(tokens[i + 3]) * self.ucnv,
                         float(tokens[i + 4]) * self.ucnv,
-                        float(tokens[i + 6]),
+                        float(tokens[i + rotation_at]),
                     ),
-                    side=tokens[i + 7],
-                    status=tokens[i + 8],
+                    side=tokens[i + rotation_at + 1],
+                    status=tokens[i + rotation_at + 2],
                 )
             )
-            i += 9
+            i += record_size
         if i < len(tokens):
             self.result.warn(
                 f"PLACEMENT has {len(tokens) - i} trailing token(s)",

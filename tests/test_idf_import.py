@@ -6,7 +6,7 @@ import pytest
 from synthetic import place_keepout, route_keepout, via_keepout, write_emn
 
 from jitxlib.mechanical.importers.idf import import_idf
-from jitxlib.mechanical.models import CircleGeometry, ClosedPath, HolePlating, HolePolicy
+from jitxlib.mechanical.models import CircleGeometry, ClosedPath, HolePlating, HolePolicy, Pose
 
 
 def _write(tmp_path: Path, text: str, name: str = "test.emn") -> Path:
@@ -20,6 +20,21 @@ IDF_FILE 3.0 "Test System" "2024-01-01" 1 "TestBoard" "MM"
 .END_HEADER
 
 .BOARD_OUTLINE "OWNER" 1.6
+0 0 0 0
+0 100 0 0
+0 100 50 0
+0 0 50 0
+0 0 0 0
+.END_BOARD_OUTLINE
+"""
+
+IDF2_BOARD = """.HEADER
+BOARD_FILE 2.0 "Test System" 1996/01/01.00:00:00 1
+"TestBoard" MM
+.END_HEADER
+
+.BOARD_OUTLINE
+1.6
 0 0 0 0
 0 100 0 0
 0 100 50 0
@@ -120,6 +135,36 @@ def test_idf_notes_placement_keepouts_and_unknown_sections_reported(tmp_path):
     assert len(imported.placements) == 1
     assert any(region.role == "route_keepout" for region in imported.regions)
     assert any(obj.source_name == ".BEND" for obj in imported.unclassified)
+
+
+@pytest.mark.parametrize(
+    ("board", "r1_location", "c1_location"),
+    [
+        (IDF2_BOARD, "20 10 90", "30 15 180"),
+        (SIMPLE, "20 10 0.5 90", "30 15 0.5 180"),
+    ],
+    ids=["idf2", "idf3"],
+)
+def test_idf_placement_record_layout_follows_header_version(
+    tmp_path, board, r1_location, c1_location
+):
+    content = (
+        board
+        + f"""
+.PLACEMENT
+"0603" "R0603_10K" "R1"
+{r1_location} "TOP" "PLACED"
+"0805" "C0805_1U" "C1"
+{c1_location} "BOTTOM" "PLACED"
+.END_PLACEMENT
+"""
+    )
+    imported = import_idf(str(_write(tmp_path, content)))
+    assert [(p.refdes, p.pose, p.side, p.status) for p in imported.placements] == [
+        ("R1", Pose(20, 10, 90), "TOP", "PLACED"),
+        ("C1", Pose(30, 15, 180), "BOTTOM", "PLACED"),
+    ]
+    assert not imported.messages
 
 
 def test_idf_arc_start_boundary_does_not_construct_jitx_arc(tmp_path):
