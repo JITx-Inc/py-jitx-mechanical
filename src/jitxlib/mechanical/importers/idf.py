@@ -167,7 +167,7 @@ def import_idf(
         IdfException: If the file is not an IDF 2.0 or 3.0 board or panel file,
             a section or line is missing or has the wrong number of fields, an
             owner or a placement side or status is not a known value, or the
-            file has more than one board outline. The message gives the line.
+            file has more than one board outline.
         ValueError: If ``hole_policy`` is not recognized or a numeric field is not
             a number.
         OSError: If the file cannot be read.
