@@ -86,9 +86,11 @@ def test_generated_boards_translate_with_attached_features(tmp_path, design_cont
 def test_mixed_holes_remain_connected_and_placed(tmp_path, design_context, recenter):
     source = tmp_path / "mixed.emn"
     source.write_text(""".HEADER
-IDF_FILE 3.0 "Test" "2026-01-01" 1 "Board" "MM"
+BOARD_FILE 3.0 "Test" 2026/01/01.00:00:00 1
+"Board" MM
 .END_HEADER
-.BOARD_OUTLINE "ECAD" 1.6
+.BOARD_OUTLINE "ECAD"
+1.6
 0 0 0 0
 0 20 0 0
 0 20 20 0
