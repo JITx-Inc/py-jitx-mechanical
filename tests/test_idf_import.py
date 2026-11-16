@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
 from synthetic import place_keepout, route_keepout, via_keepout, write_emn
 
-from jitxlib.mechanical.importers.idf import import_idf
-from jitxlib.mechanical.models import CircleGeometry, ClosedPath, HolePlating, HolePolicy
+from jitxlib.mechanical.importers.idf import IdfException, import_idf
+from jitxlib.mechanical.models import CircleGeometry, ClosedPath, HolePlating, HolePolicy, Pose
 
 
 def _write(tmp_path: Path, text: str, name: str = "test.emn") -> Path:
@@ -16,10 +17,27 @@ def _write(tmp_path: Path, text: str, name: str = "test.emn") -> Path:
 
 
 SIMPLE = """.HEADER
-IDF_FILE 3.0 "Test System" "2024-01-01" 1 "TestBoard" "MM"
+BOARD_FILE 3.0 "Test System" 2024/01/01.00:00:00 1
+"TestBoard" MM
 .END_HEADER
 
-.BOARD_OUTLINE "OWNER" 1.6
+.BOARD_OUTLINE "ECAD"
+1.6
+0 0 0 0
+0 100 0 0
+0 100 50 0
+0 0 50 0
+0 0 0 0
+.END_BOARD_OUTLINE
+"""
+
+IDF2_BOARD = """.HEADER
+BOARD_FILE 2.0 "Test System" 1996/01/01.00:00:00 1
+"TestBoard" MM
+.END_HEADER
+
+.BOARD_OUTLINE
+1.6
 0 0 0 0
 0 100 0 0
 0 100 50 0
@@ -38,10 +56,12 @@ def test_idf_simple_board_outline(tmp_path):
 
 def test_idf_board_cutout_loop(tmp_path):
     content = """.HEADER
-IDF_FILE 3.0 "Test System" "2024-01-01" 1 "TestBoard" "MM"
+BOARD_FILE 3.0 "Test System" 2024/01/01.00:00:00 1
+"TestBoard" MM
 .END_HEADER
 
-.BOARD_OUTLINE "OWNER" 1.6
+.BOARD_OUTLINE "ECAD"
+1.6
 0 0 0 0
 0 100 0 0
 0 100 50 0
@@ -99,10 +119,12 @@ def test_idf_notes_placement_keepouts_and_unknown_sections_reported(tmp_path):
 .END_NOTES
 
 .PLACEMENT
-"0603" "R0603_10K" "R1" 20 10 0 0 "TOP" "PLACED"
+"0603" "R0603_10K" "R1"
+20 10 0 0 "TOP" "PLACED"
 .END_PLACEMENT
 
-.ROUTE_KEEPOUT "OWNER" "TOP"
+.ROUTE_KEEPOUT "ECAD"
+"TOP"
 0 10 10 0
 0 20 10 0
 0 20 20 0
@@ -122,12 +144,203 @@ def test_idf_notes_placement_keepouts_and_unknown_sections_reported(tmp_path):
     assert any(obj.source_name == ".BEND" for obj in imported.unclassified)
 
 
+@pytest.mark.parametrize(
+    ("board", "r1_location", "c1_location"),
+    [
+        (IDF2_BOARD, "20 10 90", "30 15 180"),
+        (SIMPLE, "20 10 0.5 90", "30 15 0.5 180"),
+    ],
+    ids=["idf2", "idf3"],
+)
+def test_idf_placement_record_layout_follows_header_version(
+    tmp_path, board, r1_location, c1_location
+):
+    content = (
+        board
+        + f"""
+.PLACEMENT
+"0603" "R0603_10K" "R1"
+{r1_location} "TOP" "PLACED"
+"0805" "C0805_1U" "C1"
+{c1_location} "BOTTOM" "PLACED"
+.END_PLACEMENT
+"""
+    )
+    imported = import_idf(str(_write(tmp_path, content)))
+    assert [(p.refdes, p.pose, p.side, p.status) for p in imported.placements] == [
+        ("R1", Pose(20, 10, 90), "TOP", "PLACED"),
+        ("C1", Pose(30, 15, 180), "BOTTOM", "PLACED"),
+    ]
+    assert not imported.messages
+
+
+@pytest.mark.parametrize(
+    ("board", "records", "message"),
+    [
+        (
+            SIMPLE,
+            '"0603" "R0603_10K" "R1"\n20 10 90 "TOP" "PLACED"',
+            "line 17: IDF 3.0 .PLACEMENT location for 'R1' "
+            "(X Y MOUNTING_OFFSET ROTATION SIDE STATUS) has 5 field(s), expected 6",
+        ),
+        (
+            SIMPLE,
+            '"0603" "R0603_10K" "R1" 20 10 0 90 "TOP" "PLACED"',
+            ".PLACEMENT part record (PACKAGE PART_NUMBER REFDES) has 9 field(s), expected 3",
+        ),
+        (
+            SIMPLE,
+            '"0603" "R0603_10K" "R1"\n20 10 0 90 "MIDDLE" "PLACED"',
+            ".PLACEMENT side 'MIDDLE' for 'R1' is not TOP or BOTTOM",
+        ),
+        (
+            IDF2_BOARD,
+            '"0603" "R0603_10K" "R1"\n20 10 90 "TOP" "MOUNTED"',
+            ".PLACEMENT status 'MOUNTED' for 'R1' is not PLACED, UNPLACED, FIXED, MCAD, or ECAD",
+        ),
+        (
+            SIMPLE,
+            '"0603" "R0603_10K" "R1"\n20 10 0 90 "TOP" "PLACED"\n"0805" "C0805_1U" "C1"',
+            ".PLACEMENT part 'C1' has no location line",
+        ),
+        (
+            IDF2_BOARD,
+            '"0603" "R0603_10K" "R1"\n20 10 90',
+            "line 17: IDF 2.0 .PLACEMENT location for 'R1' "
+            "(X Y ROTATION SIDE [STATUS]) has 3 field(s), expected 4 or 5",
+        ),
+    ],
+    ids=[
+        "idf2-location-in-idf3",
+        "records-on-one-line",
+        "unknown-side",
+        "unknown-status",
+        "missing-location",
+        "idf2-short-location",
+    ],
+)
+def test_idf_malformed_placement_raises(tmp_path, board, records, message):
+    content = board + f"\n.PLACEMENT\n{records}\n.END_PLACEMENT\n"
+    with pytest.raises(IdfException, match=re.escape(message)):
+        import_idf(str(_write(tmp_path, content)))
+
+
+@pytest.mark.parametrize(
+    ("section", "message"),
+    [
+        (
+            ".ROUTE_KEEPOUT 1.6\nTOP\n0 10 10 0\n0 20 10 0\n0 10 10 0\n.END_ROUTE_KEEPOUT\n",
+            "line 15: IDF 3.0 .ROUTE_KEEPOUT owner is '1.6'; expected ECAD, MCAD, or UNOWNED",
+        ),
+        (
+            ".ROUTE_KEEPOUT ECAD TOP\n0 10 10 0\n0 20 10 0\n0 10 10 0\n.END_ROUTE_KEEPOUT\n",
+            ".ROUTE_KEEPOUT line has 2 fields after the keyword, expected only the owner",
+        ),
+    ],
+    ids=["not-an-owner", "record-on-keyword-line"],
+)
+def test_idf_invalid_section_owner_raises(tmp_path, section, message):
+    with pytest.raises(IdfException, match=re.escape(message)):
+        import_idf(str(_write(tmp_path, SIMPLE + "\n" + section)))
+
+
+def test_idf3_section_without_owner_warns(tmp_path):
+    section = (
+        ".ROUTE_KEEPOUT\nTOP\n0 10 10 0\n0 20 10 0\n0 20 20 0\n0 10 10 0\n.END_ROUTE_KEEPOUT\n"
+    )
+    imported = import_idf(str(_write(tmp_path, SIMPLE + "\n" + section)))
+    (region,) = imported.regions
+    assert (region.layers, region.owner) == ("TOP", "")
+    assert [m.text for m in imported.messages] == ["IDF 3.0 .ROUTE_KEEPOUT on line 15 has no owner"]
+
+
+def test_idf_comments_and_lowercase_keywords(tmp_path):
+    content = """# Exported by a test
+.header
+board_file 3.0 "Test System" 2024/01/01.00:00:00 1
+"TestBoard" mm
+.end_header
+# Between sections
+.board_outline ecad
+1.6
+0 0 0 0
+0 100 0 0
+0 100 50 0
+0 0 0 0
+.end_board_outline
+"""
+    imported = import_idf(str(_write(tmp_path, content)))
+    assert isinstance(imported.board_outline, ClosedPath)
+    assert imported.unit_scale == 1.0
+    assert not imported.messages
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        (
+            '.HEADER\nLIBRARY_FILE 3.0 "Test" 2024/01/01.00:00:00 1\nLIB MM\n.END_HEADER\n',
+            "line 2: file type 'LIBRARY_FILE' is not supported; expected BOARD_FILE or PANEL_FILE",
+        ),
+        (
+            SIMPLE.replace("BOARD_FILE 3.0", "BOARD_FILE 4.0"),
+            "line 2: IDF version 4.0 is not supported; expected 2.0 or 3.0",
+        ),
+        (
+            SIMPLE.replace('"TestBoard" MM\n', ""),
+            "line 1: .HEADER has 1 line(s), expected 2",
+        ),
+        (
+            ".BOARD_OUTLINE ECAD\n1.6\n0 0 0 0\n.END_BOARD_OUTLINE\n" + SIMPLE,
+            "line 1: expected .HEADER as the first section, found .BOARD_OUTLINE",
+        ),
+        (
+            SIMPLE + '.HEADER\nBOARD_FILE 3.0 "Test" 2024/01/01.00:00:00 1\nB MM\n.END_HEADER\n',
+            "line 14: found a second .HEADER section",
+        ),
+        (
+            SIMPLE.replace("0 100 50 0\n", "0 100 50\n"),
+            "line 10: .BOARD_OUTLINE loop point (LOOP X Y ANGLE) has 3 field(s), expected 4",
+        ),
+        (
+            SIMPLE.replace(".END_BOARD_OUTLINE\n", ""),
+            "line 6: .BOARD_OUTLINE has no .END_BOARD_OUTLINE",
+        ),
+    ],
+    ids=[
+        "library-file",
+        "unsupported-version",
+        "header-on-one-line",
+        "section-before-header",
+        "second-header",
+        "short-loop-point",
+        "missing-end",
+    ],
+)
+def test_idf_malformed_file_raises(tmp_path, content, message):
+    with pytest.raises(IdfException, match=re.escape(message)):
+        import_idf(str(_write(tmp_path, content)))
+
+
+def test_idf_non_number_raises_value_error_with_line(tmp_path):
+    content = SIMPLE.replace("0 100 50 0\n", "0 100 abc 0\n")
+    with pytest.raises(ValueError, match=re.escape("line 10: Y coordinate 'abc' is not a number")):
+        import_idf(str(_write(tmp_path, content)))
+
+
+def test_idf_line_outside_section_warns(tmp_path):
+    imported = import_idf(str(_write(tmp_path, SIMPLE + "stray text\n")))
+    assert [m.text for m in imported.messages] == ["Ignored line 14 outside any section: stray"]
+
+
 def test_idf_arc_start_boundary_does_not_construct_jitx_arc(tmp_path):
     content = """.HEADER
-IDF_FILE 3.0 "Test" "2024-01-01" 1 "Test" "MM"
+BOARD_FILE 3.0 "Test" 2024/01/01.00:00:00 1
+"Test" MM
 .END_HEADER
 
-.BOARD_OUTLINE "OWNER" 1.6
+.BOARD_OUTLINE "ECAD"
+1.6
 0 0 0 0
 0 10 0 0
 0 10 10 90
@@ -172,3 +385,37 @@ def test_region_layer_and_side_fields(tmp_path):
     route_layers = [r.layers for r in imported.regions if r.role == "route_keepout"]
     assert route_layers == ["INNER", "ALL"]
     assert any("'L7'" in message.text for message in imported.messages)
+
+
+def test_idf2_ten_nanometer_units(tmp_path):
+    content = IDF2_BOARD.replace('"TestBoard" MM', '"TestBoard" TNM') + (
+        "\n.DRILLED_HOLES\n300000 5000000 2500000 NPTH BOARD\n.END_DRILLED_HOLES\n"
+    )
+    imported = import_idf(str(_write(tmp_path, content)))
+    assert (imported.source_units, imported.unit_scale) == ("TNM", 1e-5)
+    (hole,) = imported.holes
+    circle = hole.geometry
+    assert (circle.center.x, circle.center.y, circle.radius) == pytest.approx((50, 25, 1.5))
+    assert not imported.messages
+
+
+@pytest.mark.parametrize("status", ["", '""'], ids=["omitted", "empty-string"])
+def test_idf2_blank_placement_status_means_placed(tmp_path, status):
+    content = IDF2_BOARD + (
+        f'\n.PLACEMENT\n"0603" "R0603_10K" "R1"\n20 10 90 TOP {status}\n.END_PLACEMENT\n'
+    )
+    imported = import_idf(str(_write(tmp_path, content)))
+    assert [(p.refdes, p.side, p.status) for p in imported.placements] == [("R1", "TOP", "PLACED")]
+    assert not imported.messages
+
+
+def test_idf2_place_keepout_minimum_height_warns(tmp_path):
+    section = (
+        ".PLACE_KEEPOUT\nTOP 5 1\n0 10 10 0\n0 20 10 0\n0 20 20 0\n0 10 10 0\n.END_PLACE_KEEPOUT\n"
+    )
+    imported = import_idf(str(_write(tmp_path, IDF2_BOARD + "\n" + section)))
+    (region,) = imported.regions
+    assert (region.layers, region.thickness, region.owner) == ("TOP", 5, "")
+    assert [m.text for m in imported.messages] == [
+        "IDF 2.0 .PLACE_KEEPOUT on line 16 has minimum height 1, which is not kept"
+    ]

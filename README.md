@@ -24,7 +24,8 @@ jitx-mechanical import board.emn --hole-policy component --output imported_board
 
 Imports write a Board subclass and a Markdown report. `--report report.json`
 selects JSON. DXF and IDF 2.0/3.0 text are supported; `.emn`, `.idf`, `.idx`, and
-`.bdf` select the IDF text reader. XML IDX interchange is not supported.
+`.bdf` select the IDF text reader. IDF board and panel files are read; IDF library
+files (`.emp`) and XML IDX interchange are not supported.
 
 DXF import reads XY geometry from closed polylines, circles, connected line/arc
 loops, supported hatch boundaries, and text. Block inserts, splines, dimensions,

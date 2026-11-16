@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,9 +30,16 @@ from jitxlib.mechanical.models import (
 
 logger = logging.getLogger(__name__)
 
-_UNIT_TO_MM = {"MM": 1.0, "THOU": 0.0254}
+# TNM (ten nanometers) is an IDF 2.0 unit that IDF 3.0 dropped.
+_UNIT_TO_MM = {"MM": 1.0, "THOU": 0.0254, "TNM": 1e-5}
+_FILE_TYPES = frozenset({"BOARD_FILE", "PANEL_FILE"})
+_SUPPORTED_VERSIONS = frozenset({2.0, 3.0})
 _ROUTING_LAYERS = frozenset({"TOP", "BOTTOM", "BOTH", "INNER", "ALL"})
 _BOARD_SIDES = frozenset({"TOP", "BOTTOM", "BOTH"})
+_OWNERS = frozenset({"ECAD", "MCAD", "UNOWNED"})
+_PLACEMENT_SIDES = frozenset({"TOP", "BOTTOM"})
+# FIXED is IDF 2.0 only and MCAD/ECAD are IDF 3.0 only; both are accepted for either version.
+_PLACEMENT_STATUSES = frozenset({"PLACED", "UNPLACED", "FIXED", "MCAD", "ECAD"})
 _CLOSURE_EPSILON = 1e-6
 
 
@@ -70,15 +78,81 @@ class RawHole:
     owner: str
 
 
+@dataclass(frozen=True)
+class _Record:
+    """One line of an IDF file, split into fields."""
+
+    line: int
+    fields: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _Section:
+    """A section's keyword line and the lines up to its end keyword."""
+
+    keyword: str
+    line: int
+    header: tuple[str, ...]
+    records: tuple[_Record, ...]
+
+
+@dataclass(frozen=True)
+class _RegionLayout:
+    """The record that follows an outline or keepout section's keyword line.
+
+    Field names are "layers" (routing layers), "side" (board side), "thickness"
+    (thickness or maximum height), "min_height" (IDF 2.0 minimum height), and
+    "identifier" (read but not kept). When the section has no layers or side
+    field, ``default_layers`` applies.
+    """
+
+    role: str
+    fields: tuple[str, ...]
+    default_layers: str = ""
+
+
+_REGION_LAYOUTS_V3 = {
+    ".OTHER_OUTLINE": _RegionLayout("other_outline", ("identifier", "thickness", "side")),
+    ".ROUTE_OUTLINE": _RegionLayout("route_outline", ("layers",)),
+    ".PLACE_OUTLINE": _RegionLayout("place_outline", ("side", "thickness")),
+    ".ROUTE_KEEPOUT": _RegionLayout("route_keepout", ("layers",)),
+    ".VIA_KEEPOUT": _RegionLayout("via_keepout", ()),
+    ".PLACE_KEEPOUT": _RegionLayout("place_keepout", ("side", "thickness")),
+}
+# IDF 2.0 routing outlines apply to all routing layers and placement outlines to
+# both board sides; IDF 3.0 added the records that select them.
+_REGION_LAYOUTS_V2 = {
+    ".OTHER_OUTLINE": _RegionLayout("other_outline", ("identifier", "thickness")),
+    ".ROUTE_OUTLINE": _RegionLayout("route_outline", (), default_layers="ALL"),
+    ".PLACE_OUTLINE": _RegionLayout("place_outline", (), default_layers="BOTH"),
+    ".ROUTE_KEEPOUT": _RegionLayout("route_keepout", ("layers",)),
+    ".VIA_KEEPOUT": _RegionLayout("via_keepout", ()),
+    ".PLACE_KEEPOUT": _RegionLayout("place_keepout", ("side", "thickness", "min_height")),
+}
+_SECTION_KEYWORDS = frozenset(
+    {
+        ".HEADER",
+        ".BOARD_OUTLINE",
+        ".PANEL_OUTLINE",
+        ".DRILLED_HOLES",
+        ".NOTES",
+        ".PLACEMENT",
+        *_REGION_LAYOUTS_V3,
+    }
+)
+
+
 def import_idf(
     idf_path: str,
     *,
     hole_policy: HolePolicy | str = HolePolicy.CUTOUT,
 ) -> MechanicalImport:
-    """Return an IDF board file's geometry in millimeters, with conversion messages.
+    """Return an IDF board or panel file's geometry in millimeters, with conversion messages.
 
-    Reads IDF 2.0 and 3.0 text, such as EMN board files, whatever the file name
-    suffix. XML interchange files are not supported.
+    Reads IDF 2.0 and 3.0 board and panel files, such as EMN files, whatever the
+    file name suffix. Each line is one record, as the IDF specifications define,
+    and lines that begin with ``#`` are comments. Library files and XML
+    interchange files are not supported.
 
     Args:
         idf_path: The IDF file to import.
@@ -90,8 +164,10 @@ def import_idf(
         The imported geometry, source metadata, and messages.
 
     Raises:
-        IdfException: If a required section or field is missing, or the file has
-            more than one board outline.
+        IdfException: If the file is not an IDF 2.0 or 3.0 board or panel file,
+            a section or line is missing or has the wrong number of fields, an
+            owner or a placement side or status is not a known value, or the
+            file has more than one board outline.
         ValueError: If ``hole_policy`` is not recognized or a numeric field is not
             a number.
         OSError: If the file cannot be read.
@@ -108,6 +184,7 @@ class IdfParser:
         self.filename = filename
         self.hole_policy = hole_policy
         self.ucnv = 1.0
+        self.idf_version = 3.0
         self.loop_id_seq = 0
         self.header: IdfHeader | None = None
         self.result = MechanicalImport(
@@ -116,73 +193,40 @@ class IdfParser:
         )
 
     def parse(self) -> MechanicalImport:
-        content = Path(self.filename).read_text()
-        tokens = self._tokenize(content)
+        records = _read_records(Path(self.filename).read_text())
 
         board_outlines: list[tuple[Geometry, list[Geometry]]] = []
         panel_outlines: list[tuple[Geometry, list[Geometry]]] = []
 
-        i = 0
-        while i < len(tokens):
-            token = tokens[i]
-
-            if token == ".HEADER":
-                end_pos = self._find_section_end(tokens[i + 1 :], ".END_HEADER")
-                self._parse_header(tokens[i + 1 : i + 1 + end_pos])
-                i = i + 1 + end_pos + 1
-            elif token in (".BOARD_OUTLINE", ".PANEL_OUTLINE"):
-                end_marker = (
-                    ".END_PANEL_OUTLINE" if token == ".PANEL_OUTLINE" else ".END_BOARD_OUTLINE"
+        for section in self._sections(records):
+            keyword = section.keyword
+            if self.header is None and keyword != ".HEADER":
+                raise _error(
+                    section.line, f"expected .HEADER as the first section, found {keyword}"
                 )
-                end_pos = self._find_section_end(tokens[i + 1 :], end_marker)
-                outline = self._parse_board_or_panel_outline(token, tokens[i + 1 : i + 1 + end_pos])
-                if outline is not None:
-                    if token == ".PANEL_OUTLINE":
-                        panel_outlines.append(outline)
-                    else:
-                        board_outlines.append(outline)
-                i = i + 1 + end_pos + 1
-            elif token == ".OTHER_OUTLINE":
-                # owner, identifier, thickness, board side
-                i = self._parse_outline_region(
-                    tokens, i, "other_outline", skip=4, layers_at=3, thickness_at=2
-                )
-            elif token == ".ROUTE_OUTLINE":
-                # owner, routing layers
-                i = self._parse_outline_region(tokens, i, "route_outline", skip=2, layers_at=1)
-            elif token == ".PLACE_OUTLINE":
-                # owner, board side, height
-                i = self._parse_outline_region(
-                    tokens, i, "place_outline", skip=3, layers_at=1, thickness_at=2
-                )
-            elif token == ".ROUTE_KEEPOUT":
-                # owner, routing layers
-                i = self._parse_outline_region(tokens, i, "route_keepout", skip=2, layers_at=1)
-            elif token == ".VIA_KEEPOUT":
-                # owner; via keepouts apply to every layer
-                i = self._parse_outline_region(tokens, i, "via_keepout", skip=1)
-            elif token == ".PLACE_KEEPOUT":
-                # owner, board side, height
-                i = self._parse_outline_region(
-                    tokens, i, "place_keepout", skip=3, layers_at=1, thickness_at=2
-                )
-            elif token == ".DRILLED_HOLES":
-                end_pos = self._find_section_end(tokens[i + 1 :], ".END_DRILLED_HOLES")
-                version = self.header.idf_version if self.header else 3.0
-                self._parse_holes(tokens[i + 1 : i + 1 + end_pos], version)
-                i = i + 1 + end_pos + 1
-            elif token == ".NOTES":
-                end_pos = self._find_section_end(tokens[i + 1 :], ".END_NOTES")
-                self._parse_notes(tokens[i + 1 : i + 1 + end_pos])
-                i = i + 1 + end_pos + 1
-            elif token == ".PLACEMENT":
-                end_pos = self._find_section_end(tokens[i + 1 :], ".END_PLACEMENT")
-                self._parse_placement(tokens[i + 1 : i + 1 + end_pos])
-                i = i + 1 + end_pos + 1
-            elif token.startswith(".") and not token.startswith(".END_"):
-                i = self._skip_unknown_section(tokens, i, token)
+            if keyword == ".HEADER":
+                self._parse_header(section)
+            elif keyword in (".BOARD_OUTLINE", ".PANEL_OUTLINE"):
+                outline = self._parse_board_or_panel_outline(section)
+                if outline is not None and keyword == ".PANEL_OUTLINE":
+                    panel_outlines.append(outline)
+                elif outline is not None:
+                    board_outlines.append(outline)
+            elif keyword in _REGION_LAYOUTS_V3:
+                layouts = _REGION_LAYOUTS_V2 if self.idf_version < 3.0 else _REGION_LAYOUTS_V3
+                self._parse_region(section, layouts[keyword])
+            elif keyword == ".DRILLED_HOLES":
+                self._parse_holes(section)
+            elif keyword == ".NOTES":
+                self._parse_notes(section)
+            elif keyword == ".PLACEMENT":
+                self._parse_placement(section)
             else:
-                i += 1
+                self.result.unclassified.append(
+                    SourceObject(
+                        "unknown_section", keyword, detail=f"{len(section.records)} line(s)"
+                    )
+                )
 
         self._finish_primary_outline(board_outlines, panel_outlines)
         if self.header is None:
@@ -191,142 +235,189 @@ class IdfParser:
             raise IdfException("No board outline or panel outline found")
         return self.result
 
-    def _tokenize(self, content: str) -> list[str]:
-        tokens = []
-        for line in content.replace("\r\n", "\n").split("\n"):
-            tokens.extend(self._tokenize_line(line.strip()))
-        return tokens
-
-    def _tokenize_line(self, line: str) -> list[str]:
-        tokens = []
+    def _sections(self, records: list[_Record]) -> Iterator[_Section]:
         i = 0
-        in_quote = False
-        current = ""
-        while i < len(line):
-            char = line[i]
-            if in_quote:
-                if char == '"':
-                    tokens.append(current)
-                    current = ""
-                    in_quote = False
-                else:
-                    current += char
-            elif char == '"':
-                in_quote = True
-            elif char in (" ", "\t"):
-                if current:
-                    tokens.append(current)
-                    current = ""
-            else:
-                current += char
-            i += 1
-        if current:
-            tokens.append(current)
-        return tokens
+        while i < len(records):
+            record = records[i]
+            keyword = record.fields[0].upper()
+            if not keyword.startswith(".") or keyword.startswith(".END_"):
+                self.result.warn(
+                    f"Ignored line {record.line} outside any section: {record.fields[0]}"
+                )
+                i += 1
+                continue
+            end_keyword = ".END_" + keyword[1:]
+            end = _find_end(records, i + 1, end_keyword)
+            if end is None:
+                if keyword in _SECTION_KEYWORDS:
+                    raise _error(record.line, f"{keyword} has no {end_keyword}")
+                self.result.unclassified.append(SourceObject("unknown_token", record.fields[0]))
+                i += 1
+                continue
+            yield _Section(keyword, record.line, record.fields[1:], tuple(records[i + 1 : end]))
+            i = end + 1
 
-    def _find_section_end(self, tokens: list[str], match_str: str) -> int:
-        try:
-            return tokens.index(match_str)
-        except ValueError as exc:
-            raise IdfException(f"{match_str} not found.") from exc
-
-    def _parse_header(self, header_tokens: list[str]) -> None:
-        if len(header_tokens) < 7:
-            raise IdfException("HEADER section has too few fields")
-        self.header = IdfHeader(
-            filetype=header_tokens[0],
-            idf_version=float(header_tokens[1]),
-            source_system=header_tokens[2],
-            date=header_tokens[3],
-            version=int(header_tokens[4]),
-            name=header_tokens[5],
-            units=header_tokens[6],
+    def _parse_header(self, section: _Section) -> None:
+        if self.header is not None:
+            raise _error(section.line, "found a second .HEADER section")
+        _expect_keyword_only(section)
+        if len(section.records) != 2:
+            raise _error(
+                section.line,
+                f".HEADER has {len(section.records)} line(s), expected 2: "
+                "FILE_TYPE IDF_VERSION SOURCE DATE FILE_VERSION, then BOARD_NAME UNITS",
+            )
+        file_record, board_record = section.records
+        _check_fields(
+            file_record, 5, ".HEADER record (FILE_TYPE IDF_VERSION SOURCE DATE FILE_VERSION)"
         )
-        self.ucnv = _UNIT_TO_MM.get(self.header.units.upper(), 1.0)
-        self.result.source_units = self.header.units
+        _check_fields(board_record, 2, ".HEADER record (BOARD_NAME UNITS)")
+        filetype, version_text, source_system, date, file_version = file_record.fields
+        if filetype.upper() not in _FILE_TYPES:
+            raise _error(
+                file_record.line,
+                f"file type {filetype!r} is not supported; expected BOARD_FILE or PANEL_FILE",
+            )
+        idf_version = _to_float(version_text, file_record.line, "IDF version")
+        if idf_version not in _SUPPORTED_VERSIONS:
+            raise _error(
+                file_record.line,
+                f"IDF version {version_text} is not supported; expected 2.0 or 3.0",
+            )
+        name, units = board_record.fields
+        self.header = IdfHeader(
+            filetype=filetype,
+            idf_version=idf_version,
+            source_system=source_system,
+            date=date,
+            version=_to_int(file_version, file_record.line, "file version"),
+            name=name,
+            units=units,
+        )
+        self.idf_version = idf_version
+        self.ucnv = _UNIT_TO_MM.get(units.upper(), 1.0)
+        self.result.source_units = units
         self.result.unit_scale = self.ucnv
-        if self.header.units.upper() not in _UNIT_TO_MM:
-            self.result.warn(f"Unknown IDF units {self.header.units!r}; assuming millimeters")
+        if units.upper() not in _UNIT_TO_MM:
+            self.result.warn(f"Unknown IDF units {units!r}; assuming millimeters")
+
+    def _section_owner(self, section: _Section) -> str:
+        if len(section.header) > 1:
+            raise _error(
+                section.line,
+                f"{section.keyword} line has {len(section.header)} fields after the keyword, "
+                "expected only the owner",
+            )
+        if not section.header:
+            if self.idf_version >= 3.0:
+                self.result.warn(
+                    f"IDF {self.idf_version} {section.keyword} on line {section.line} has no owner",
+                    source=section.keyword,
+                )
+            return ""
+        owner = section.header[0]
+        if owner.upper() not in _OWNERS:
+            raise _error(
+                section.line,
+                f"IDF {self.idf_version} {section.keyword} owner is {owner!r}; "
+                "expected ECAD, MCAD, or UNOWNED",
+            )
+        return owner
 
     def _parse_board_or_panel_outline(
-        self, section: str, section_tokens: list[str]
+        self, section: _Section
     ) -> tuple[Geometry, list[Geometry]] | None:
-        if self.header and self.header.idf_version < 3.0:
-            if len(section_tokens) < 1:
-                return None
-            loop_tokens = section_tokens[1:]
-        else:
-            if len(section_tokens) < 2:
-                return None
-            loop_tokens = section_tokens[2:]
-        geometries = self._points_to_geometries(self._parse_loop_points(loop_tokens), section)
+        self._section_owner(section)
+        if not section.records:
+            return None
+        thickness = section.records[0]
+        _check_fields(thickness, 1, f"{section.keyword} thickness record")
+        _to_float(thickness.fields[0], thickness.line, "thickness")
+        loop_points = self._parse_loop_points(section, section.records[1:])
+        geometries = self._points_to_geometries(loop_points, section.keyword)
         if not geometries:
             return None
         return geometries[0], geometries[1:]
 
-    def _parse_outline_region(
-        self,
-        tokens: list[str],
-        i: int,
-        role: str,
-        *,
-        skip: int,
-        layers_at: int | None = None,
-        thickness_at: int | None = None,
-    ) -> int:
-        end_pos = self._find_section_end(tokens[i + 1 :], ".END_" + tokens[i][1:])
-        section_tokens = tokens[i + 1 : i + 1 + end_pos]
-        owner = section_tokens[0] if section_tokens else ""
-        layers = ""
-        if layers_at is not None and len(section_tokens) > layers_at:
-            layers = section_tokens[layers_at].upper()
-            routing = role.startswith("route")
-            if layers not in (_ROUTING_LAYERS if routing else _BOARD_SIDES):
-                fallback = "all layers" if routing else "both board sides"
-                self.result.warn(
-                    f"Unknown {tokens[i]} layer {section_tokens[layers_at]!r}; using {fallback}",
-                    source=tokens[i],
-                )
-                layers = "ALL" if routing else "BOTH"
+    def _parse_region(self, section: _Section, layout: _RegionLayout) -> None:
+        owner = self._section_owner(section)
+        records = section.records
+        values: dict[str, str] = {}
         thickness = 0.0
-        if thickness_at is not None and len(section_tokens) > thickness_at:
-            thickness = float(section_tokens[thickness_at]) * self.ucnv
+        if layout.fields:
+            if not records:
+                raise _error(section.line, f"{section.keyword} has no lines")
+            first = records[0]
+            names = " ".join(name.upper() for name in layout.fields)
+            _check_fields(
+                first,
+                len(layout.fields),
+                f"IDF {self.idf_version} {section.keyword} record ({names})",
+            )
+            values = dict(zip(layout.fields, first.fields, strict=True))
+            if "thickness" in values:
+                thickness = _to_float(values["thickness"], first.line, "thickness") * self.ucnv
+            if "min_height" in values:
+                min_height = _to_float(values["min_height"], first.line, "minimum height")
+                if min_height > 0:
+                    self.result.warn(
+                        f"IDF {self.idf_version} {section.keyword} on line {first.line} "
+                        f"has minimum height {values['min_height']}, which is not kept",
+                        source=section.keyword,
+                    )
+            records = records[1:]
+        layers = self._region_layers(section, layout, values)
         geometries = self._points_to_geometries(
-            self._parse_loop_points(section_tokens[skip:]), tokens[i]
+            self._parse_loop_points(section, records), section.keyword
         )
         for idx, geometry in enumerate(geometries):
             self.result.regions.append(
                 MechanicalRegion(
-                    role=role,
+                    role=layout.role,
                     geometry=geometry,
-                    source_name=tokens[i] if idx == 0 else f"{tokens[i]} cutout",
+                    source_name=section.keyword if idx == 0 else f"{section.keyword} cutout",
                     layers=layers,
                     owner=owner,
                     thickness=thickness,
                 )
             )
-        return i + 1 + end_pos + 1
 
-    def _parse_loop_points(self, tokens: list[str]) -> list[LoopPoint]:
+    def _region_layers(
+        self, section: _Section, layout: _RegionLayout, values: dict[str, str]
+    ) -> str:
+        if "layers" in values:
+            return self._known_layers(section, values["layers"], _ROUTING_LAYERS, "ALL")
+        if "side" in values:
+            return self._known_layers(section, values["side"], _BOARD_SIDES, "BOTH")
+        return layout.default_layers
+
+    def _known_layers(
+        self, section: _Section, value: str, known: frozenset[str], fallback: str
+    ) -> str:
+        if value.upper() in known:
+            return value.upper()
+        description = "all layers" if fallback == "ALL" else "both board sides"
+        self.result.warn(
+            f"Unknown {section.keyword} layer {value!r}; using {description}",
+            source=section.keyword,
+        )
+        return fallback
+
+    def _parse_loop_points(self, section: _Section, records: Sequence[_Record]) -> list[LoopPoint]:
         points = []
-        i = 0
-        while i + 3 < len(tokens):
+        for record in records:
+            _check_fields(record, 4, f"{section.keyword} loop point (LOOP X Y ANGLE)")
+            label, x, y, angle = record.fields
             points.append(
                 LoopPoint(
                     id=self.loop_id_seq,
-                    loop_n=int(tokens[i]),
-                    x=float(tokens[i + 1]),
-                    y=float(tokens[i + 2]),
-                    angle=float(tokens[i + 3]),
+                    loop_n=_to_int(label, record.line, "loop label"),
+                    x=_to_float(x, record.line, "X coordinate"),
+                    y=_to_float(y, record.line, "Y coordinate"),
+                    angle=_to_float(angle, record.line, "angle"),
                 )
             )
             self.loop_id_seq += 1
-            i += 4
-        if i < len(tokens):
-            self.result.warn(
-                f"Loop point data has {len(tokens) - i} trailing token(s)",
-                source="loop_points",
-            )
         return points
 
     def _points_to_geometries(self, loop_points: list[LoopPoint], section: str) -> list[Geometry]:
@@ -375,38 +466,30 @@ class IdfParser:
                 geometries.extend(loop_circles)
         return geometries
 
-    def _parse_holes(self, tokens: list[str], idf_version: float) -> None:
-        record_size = 5 if idf_version < 3.0 else 7
-        i = 0
-        while i + record_size - 1 < len(tokens):
-            hole = self._raw_hole(tokens[i : i + record_size], idf_version)
-            self._add_hole(hole)
-            i += record_size
-        if i < len(tokens):
-            self.result.warn(
-                f"DRILLED_HOLES has {len(tokens) - i} trailing token(s)",
-                source=".DRILLED_HOLES",
+    def _parse_holes(self, section: _Section) -> None:
+        _expect_keyword_only(section)
+        if self.idf_version < 3.0:
+            layout = "DIAMETER X Y PLATING ASSOCIATED_PART"
+        else:
+            layout = "DIAMETER X Y PLATING ASSOCIATED_PART HOLE_TYPE OWNER"
+        for record in section.records:
+            _check_fields(
+                record,
+                len(layout.split()),
+                f"IDF {self.idf_version} .DRILLED_HOLES record ({layout})",
             )
+            self._add_hole(self._raw_hole(record))
 
-    def _raw_hole(self, tokens: list[str], idf_version: float) -> RawHole:
-        if idf_version < 3.0:
-            return RawHole(
-                dia=float(tokens[0]) * self.ucnv,
-                x=float(tokens[1]) * self.ucnv,
-                y=float(tokens[2]) * self.ucnv,
-                plating=tokens[3],
-                assoc=tokens[4],
-                hole_type="",
-                owner="",
-            )
+    def _raw_hole(self, record: _Record) -> RawHole:
+        fields = record.fields
         return RawHole(
-            dia=float(tokens[0]) * self.ucnv,
-            x=float(tokens[1]) * self.ucnv,
-            y=float(tokens[2]) * self.ucnv,
-            plating=tokens[3],
-            assoc=tokens[4],
-            hole_type=tokens[5],
-            owner=tokens[6],
+            dia=_to_float(fields[0], record.line, "hole diameter") * self.ucnv,
+            x=_to_float(fields[1], record.line, "X coordinate") * self.ucnv,
+            y=_to_float(fields[2], record.line, "Y coordinate") * self.ucnv,
+            plating=fields[3],
+            assoc=fields[4],
+            hole_type=fields[5] if len(fields) > 5 else "",
+            owner=fields[6] if len(fields) > 6 else "",
         )
 
     def _add_hole(self, raw: RawHole) -> None:
@@ -467,58 +550,77 @@ class IdfParser:
             )
         )
 
-    def _parse_notes(self, tokens: list[str]) -> None:
-        i = 0
-        while i + 4 < len(tokens):
-            text = tokens[i + 4].replace(chr(1), "").replace(chr(2), "")
+    def _parse_notes(self, section: _Section) -> None:
+        _expect_keyword_only(section)
+        for record in section.records:
+            _check_fields(record, 5, ".NOTES record (X Y HEIGHT LENGTH TEXT)")
+            x, y, height, _length, text = record.fields
             self.result.annotations.append(
                 MechanicalAnnotation(
                     role="note",
-                    text=text,
-                    position=Point(float(tokens[i]) * self.ucnv, float(tokens[i + 1]) * self.ucnv),
-                    height=float(tokens[i + 2]) * self.ucnv,
+                    text=text.replace(chr(1), "").replace(chr(2), ""),
+                    position=Point(
+                        _to_float(x, record.line, "X coordinate") * self.ucnv,
+                        _to_float(y, record.line, "Y coordinate") * self.ucnv,
+                    ),
+                    height=_to_float(height, record.line, "text height") * self.ucnv,
                     source_name=".NOTES",
                 )
             )
-            i += 5
-        if i < len(tokens):
-            self.result.warn(f"NOTES has {len(tokens) - i} trailing token(s)", source=".NOTES")
 
-    def _parse_placement(self, tokens: list[str]) -> None:
-        i = 0
-        while i + 8 < len(tokens):
+    def _parse_placement(self, section: _Section) -> None:
+        _expect_keyword_only(section)
+        if self.idf_version < 3.0:
+            layout = "X Y ROTATION SIDE [STATUS]"
+            field_counts = (4, 5)
+        else:
+            layout = "X Y MOUNTING_OFFSET ROTATION SIDE STATUS"
+            field_counts = (6,)
+        records = section.records
+        for i in range(0, len(records), 2):
+            part = records[i]
+            _check_fields(part, 3, ".PLACEMENT part record (PACKAGE PART_NUMBER REFDES)")
+            package, part_number, refdes = part.fields
+            if i + 1 == len(records):
+                raise _error(part.line, f".PLACEMENT part {refdes!r} has no location line")
+            location = records[i + 1]
+            _check_fields(
+                location,
+                field_counts,
+                f"IDF {self.idf_version} .PLACEMENT location for {refdes!r} ({layout})",
+            )
+            if self.idf_version < 3.0:
+                x, y, rotation, side = location.fields[:4]
+                # IDF 2.0 assumes a component with a blank status is placed.
+                status = location.fields[4] if len(location.fields) == 5 else ""
+                status = status or "PLACED"
+            else:
+                x, y, _offset, rotation, side, status = location.fields
+            if side.upper() not in _PLACEMENT_SIDES:
+                raise _error(
+                    location.line,
+                    f".PLACEMENT side {side!r} for {refdes!r} is not TOP or BOTTOM",
+                )
+            if status.upper() not in _PLACEMENT_STATUSES:
+                raise _error(
+                    location.line,
+                    f".PLACEMENT status {status!r} for {refdes!r} is not "
+                    "PLACED, UNPLACED, FIXED, MCAD, or ECAD",
+                )
             self.result.placements.append(
                 MechanicalPlacement(
-                    package=tokens[i],
-                    part_number=tokens[i + 1],
-                    refdes=tokens[i + 2],
+                    package=package,
+                    part_number=part_number,
+                    refdes=refdes,
                     pose=Pose(
-                        float(tokens[i + 3]) * self.ucnv,
-                        float(tokens[i + 4]) * self.ucnv,
-                        float(tokens[i + 6]),
+                        _to_float(x, location.line, "X coordinate") * self.ucnv,
+                        _to_float(y, location.line, "Y coordinate") * self.ucnv,
+                        _to_float(rotation, location.line, "rotation"),
                     ),
-                    side=tokens[i + 7],
-                    status=tokens[i + 8],
+                    side=side,
+                    status=status,
                 )
             )
-            i += 9
-        if i < len(tokens):
-            self.result.warn(
-                f"PLACEMENT has {len(tokens) - i} trailing token(s)",
-                source=".PLACEMENT",
-            )
-
-    def _skip_unknown_section(self, tokens: list[str], i: int, token: str) -> int:
-        end_marker = ".END_" + token[1:]
-        try:
-            end_pos = self._find_section_end(tokens[i + 1 :], end_marker)
-        except IdfException:
-            self.result.unclassified.append(SourceObject("unknown_token", token))
-            return i + 1
-        self.result.unclassified.append(
-            SourceObject("unknown_section", token, detail=f"{end_pos} token(s)")
-        )
-        return i + 1 + end_pos + 1
 
     def _finish_primary_outline(
         self,
@@ -541,6 +643,81 @@ class IdfParser:
             raise IdfException(f"Expected exactly 1 board/panel outline, found {len(primary)}")
         self.result.board_outline = primary[0][0]
         self.result.board_cutouts.extend(primary[0][1])
+
+
+def _read_records(content: str) -> list[_Record]:
+    records = []
+    for number, line in enumerate(content.replace("\r\n", "\n").split("\n"), start=1):
+        text = line.strip()
+        if text and not text.startswith("#"):
+            records.append(_Record(number, tuple(_split_fields(text))))
+    return records
+
+
+def _split_fields(line: str) -> list[str]:
+    fields = []
+    in_quote = False
+    current = ""
+    for char in line:
+        if in_quote:
+            if char == '"':
+                fields.append(current)
+                current = ""
+                in_quote = False
+            else:
+                current += char
+        elif char == '"':
+            in_quote = True
+        elif char in (" ", "\t"):
+            if current:
+                fields.append(current)
+                current = ""
+        else:
+            current += char
+    if current:
+        fields.append(current)
+    return fields
+
+
+def _find_end(records: list[_Record], start: int, end_keyword: str) -> int | None:
+    for i in range(start, len(records)):
+        if records[i].fields[0].upper() == end_keyword:
+            return i
+    return None
+
+
+def _expect_keyword_only(section: _Section) -> None:
+    if section.header:
+        raise _error(
+            section.line,
+            f"{section.keyword} line has unexpected fields after the keyword: "
+            f"{' '.join(section.header)}",
+        )
+
+
+def _check_fields(record: _Record, count: int | tuple[int, ...], what: str) -> None:
+    counts = (count,) if isinstance(count, int) else count
+    if len(record.fields) not in counts:
+        expected = " or ".join(str(c) for c in counts)
+        raise _error(record.line, f"{what} has {len(record.fields)} field(s), expected {expected}")
+
+
+def _to_float(value: str, line: int, what: str) -> float:
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(f"line {line}: {what} {value!r} is not a number") from exc
+
+
+def _to_int(value: str, line: int, what: str) -> int:
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(f"line {line}: {what} {value!r} is not an integer") from exc
+
+
+def _error(line: int, message: str) -> IdfException:
+    return IdfException(f"line {line}: {message}")
 
 
 def _points_differ(a: Point, b: Point) -> bool:
