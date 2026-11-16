@@ -30,7 +30,8 @@ from jitxlib.mechanical.models import (
 
 logger = logging.getLogger(__name__)
 
-_UNIT_TO_MM = {"MM": 1.0, "THOU": 0.0254}
+# TNM (ten nanometers) is an IDF 2.0 unit that IDF 3.0 dropped.
+_UNIT_TO_MM = {"MM": 1.0, "THOU": 0.0254, "TNM": 1e-5}
 _FILE_TYPES = frozenset({"BOARD_FILE", "PANEL_FILE"})
 _SUPPORTED_VERSIONS = frozenset({2.0, 3.0})
 _ROUTING_LAYERS = frozenset({"TOP", "BOTTOM", "BOTH", "INNER", "ALL"})
@@ -100,7 +101,9 @@ class _RegionLayout:
     """The record that follows an outline or keepout section's keyword line.
 
     Field names are "layers" (routing layers), "side" (board side), "thickness"
-    (thickness or height), and fields that are read but not kept.
+    (thickness or maximum height), "min_height" (IDF 2.0 minimum height), and
+    "identifier" (read but not kept). When the section has no layers or side
+    field, ``default_layers`` applies.
     """
 
     role: str
@@ -108,13 +111,23 @@ class _RegionLayout:
     default_layers: str = ""
 
 
-_REGION_LAYOUTS = {
+_REGION_LAYOUTS_V3 = {
     ".OTHER_OUTLINE": _RegionLayout("other_outline", ("identifier", "thickness", "side")),
     ".ROUTE_OUTLINE": _RegionLayout("route_outline", ("layers",)),
     ".PLACE_OUTLINE": _RegionLayout("place_outline", ("side", "thickness")),
     ".ROUTE_KEEPOUT": _RegionLayout("route_keepout", ("layers",)),
     ".VIA_KEEPOUT": _RegionLayout("via_keepout", ()),
     ".PLACE_KEEPOUT": _RegionLayout("place_keepout", ("side", "thickness")),
+}
+# IDF 2.0 routing outlines apply to all routing layers and placement outlines to
+# both board sides; IDF 3.0 added the records that select them.
+_REGION_LAYOUTS_V2 = {
+    ".OTHER_OUTLINE": _RegionLayout("other_outline", ("identifier", "thickness")),
+    ".ROUTE_OUTLINE": _RegionLayout("route_outline", (), default_layers="ALL"),
+    ".PLACE_OUTLINE": _RegionLayout("place_outline", (), default_layers="BOTH"),
+    ".ROUTE_KEEPOUT": _RegionLayout("route_keepout", ("layers",)),
+    ".VIA_KEEPOUT": _RegionLayout("via_keepout", ()),
+    ".PLACE_KEEPOUT": _RegionLayout("place_keepout", ("side", "thickness", "min_height")),
 }
 _SECTION_KEYWORDS = frozenset(
     {
@@ -124,7 +137,7 @@ _SECTION_KEYWORDS = frozenset(
         ".DRILLED_HOLES",
         ".NOTES",
         ".PLACEMENT",
-        *_REGION_LAYOUTS,
+        *_REGION_LAYOUTS_V3,
     }
 )
 
@@ -199,8 +212,9 @@ class IdfParser:
                     panel_outlines.append(outline)
                 elif outline is not None:
                     board_outlines.append(outline)
-            elif keyword in _REGION_LAYOUTS:
-                self._parse_region(section, _REGION_LAYOUTS[keyword])
+            elif keyword in _REGION_LAYOUTS_V3:
+                layouts = _REGION_LAYOUTS_V2 if self.idf_version < 3.0 else _REGION_LAYOUTS_V3
+                self._parse_region(section, layouts[keyword])
             elif keyword == ".DRILLED_HOLES":
                 self._parse_holes(section)
             elif keyword == ".NOTES":
@@ -343,6 +357,14 @@ class IdfParser:
             values = dict(zip(layout.fields, first.fields, strict=True))
             if "thickness" in values:
                 thickness = _to_float(values["thickness"], first.line, "thickness") * self.ucnv
+            if "min_height" in values:
+                min_height = _to_float(values["min_height"], first.line, "minimum height")
+                if min_height > 0:
+                    self.result.warn(
+                        f"IDF {self.idf_version} {section.keyword} on line {first.line} "
+                        f"has minimum height {values['min_height']}, which is not kept",
+                        source=section.keyword,
+                    )
             records = records[1:]
         layers = self._region_layers(section, layout, values)
         geometries = self._points_to_geometries(
@@ -549,9 +571,11 @@ class IdfParser:
     def _parse_placement(self, section: _Section) -> None:
         _expect_keyword_only(section)
         if self.idf_version < 3.0:
-            layout = "X Y ROTATION SIDE STATUS"
+            layout = "X Y ROTATION SIDE [STATUS]"
+            field_counts = (4, 5)
         else:
             layout = "X Y MOUNTING_OFFSET ROTATION SIDE STATUS"
+            field_counts = (6,)
         records = section.records
         for i in range(0, len(records), 2):
             part = records[i]
@@ -562,11 +586,14 @@ class IdfParser:
             location = records[i + 1]
             _check_fields(
                 location,
-                len(layout.split()),
+                field_counts,
                 f"IDF {self.idf_version} .PLACEMENT location for {refdes!r} ({layout})",
             )
             if self.idf_version < 3.0:
-                x, y, rotation, side, status = location.fields
+                x, y, rotation, side = location.fields[:4]
+                # IDF 2.0 assumes a component with a blank status is placed.
+                status = location.fields[4] if len(location.fields) == 5 else ""
+                status = status or "PLACED"
             else:
                 x, y, _offset, rotation, side, status = location.fields
             if side.upper() not in _PLACEMENT_SIDES:
@@ -668,9 +695,11 @@ def _expect_keyword_only(section: _Section) -> None:
         )
 
 
-def _check_fields(record: _Record, count: int, what: str) -> None:
-    if len(record.fields) != count:
-        raise _error(record.line, f"{what} has {len(record.fields)} field(s), expected {count}")
+def _check_fields(record: _Record, count: int | tuple[int, ...], what: str) -> None:
+    counts = (count,) if isinstance(count, int) else count
+    if len(record.fields) not in counts:
+        expected = " or ".join(str(c) for c in counts)
+        raise _error(record.line, f"{what} has {len(record.fields)} field(s), expected {expected}")
 
 
 def _to_float(value: str, line: int, what: str) -> float:

@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+from pathlib import Path
 
 import ezdxf
 import pytest
@@ -24,9 +25,23 @@ from jitxlib.mechanical.models import (
     Point,
 )
 
+IDF_FIXTURES = Path(__file__).parent / "fixtures" / "idf"
+
 
 def _square_cut(tmp_path):
     return write_emn(tmp_path / "square.emn", outline=(0, 0, 40, 40), cutouts=[(10, 10, 30, 30)])
+
+
+def _idf20_spec_board(tmp_path):
+    return IDF_FIXTURES / "idf20_spec_board.emn"
+
+
+def _idf30_spec_board(tmp_path):
+    return IDF_FIXTURES / "idf30_spec_board.emn"
+
+
+def _idf30_spec_panel(tmp_path):
+    return IDF_FIXTURES / "idf30_spec_panel.emn"
 
 
 def _features(tmp_path):
@@ -61,7 +76,11 @@ def _custom_feature_count(region):
     return 2 if sided and region.layers == "BOTH" else 1
 
 
-@pytest.mark.parametrize("build", [_square_cut, _features], ids=["square_cut", "features"])
+@pytest.mark.parametrize(
+    "build",
+    [_square_cut, _features, _idf20_spec_board, _idf30_spec_board, _idf30_spec_panel],
+    ids=["square_cut", "features", "idf20_spec_board", "idf30_spec_board", "idf30_spec_panel"],
+)
 def test_generated_boards_translate_with_attached_features(tmp_path, design_context, build):
     imported = import_idf(str(build(tmp_path)))
     module = load_code(tmp_path / "generated_board.py", generate_board_module(imported))

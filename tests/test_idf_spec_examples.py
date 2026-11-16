@@ -72,6 +72,45 @@ def test_idf30_spec_board_example():
     assert not imported.unclassified
 
 
+def test_idf20_spec_board_example():
+    imported = _import("idf20_spec_board.emn")
+
+    assert (imported.source_units, imported.unit_scale) == ("THOU", THOU)
+    assert isinstance(imported.board_outline, ClosedPath)
+    assert len(imported.board_cutouts) == 1 + len(imported.holes)
+    assert [(h.plating, h.associated_with, h.hole_type, h.owner) for h in imported.holes] == [
+        (HolePlating.UNPLATED, "P1", "", ""),
+        (HolePlating.UNPLATED, "P1", "", ""),
+        (HolePlating.PLATED, "BOARD", "", ""),
+        (HolePlating.UNPLATED, "BOARD", "", ""),
+        (HolePlating.UNPLATED, "BOARD", "", ""),
+        (HolePlating.UNPLATED, "BOARD", "", ""),
+    ]
+    assert [(r.role, r.source_name, r.layers, r.owner) for r in imported.regions] == [
+        ("other_outline", ".OTHER_OUTLINE", "", ""),
+        *[("other_outline", ".OTHER_OUTLINE cutout", "", "")] * 4,
+        ("route_outline", ".ROUTE_OUTLINE", "ALL", ""),
+        ("place_outline", ".PLACE_OUTLINE", "BOTH", ""),
+        ("route_keepout", ".ROUTE_KEEPOUT", "ALL", ""),
+        ("place_keepout", ".PLACE_KEEPOUT", "BOTTOM", ""),
+    ]
+    assert [r.thickness for r in imported.regions] == pytest.approx(
+        [62 * THOU] * 5 + [0, 0, 0, 250 * THOU]
+    )
+    assert [(o.role, o.source_name) for o in imported.unclassified] == [
+        ("unknown_section", ".PLACE_REGION")
+    ]
+
+    placements = {p.refdes: p for p in imported.placements}
+    assert len(imported.placements) == 26
+    p1 = placements["P1"]
+    assert (p1.pose.x, p1.pose.y, p1.pose.angle) == pytest.approx((5400 * THOU, 300 * THOU, 180))
+    assert (p1.side, p1.status) == ("TOP", "FIXED")
+    assert (placements["U9"].side, placements["U5"].status) == ("BOTTOM", "UNPLACED")
+    assert [p.package for p in imported.placements if p.refdes == "norefdes"] == ["extractor"] * 2
+    assert not imported.messages
+
+
 def test_idf30_spec_panel_example():
     imported = _import("idf30_spec_panel.emn")
 

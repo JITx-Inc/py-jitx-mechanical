@@ -203,6 +203,12 @@ def test_idf_placement_record_layout_follows_header_version(
             '"0603" "R0603_10K" "R1"\n20 10 0 90 "TOP" "PLACED"\n"0805" "C0805_1U" "C1"',
             ".PLACEMENT part 'C1' has no location line",
         ),
+        (
+            IDF2_BOARD,
+            '"0603" "R0603_10K" "R1"\n20 10 90',
+            "line 17: IDF 2.0 .PLACEMENT location for 'R1' "
+            "(X Y ROTATION SIDE [STATUS]) has 3 field(s), expected 4 or 5",
+        ),
     ],
     ids=[
         "idf2-location-in-idf3",
@@ -210,6 +216,7 @@ def test_idf_placement_record_layout_follows_header_version(
         "unknown-side",
         "unknown-status",
         "missing-location",
+        "idf2-short-location",
     ],
 )
 def test_idf_malformed_placement_raises(tmp_path, board, records, message):
@@ -378,3 +385,37 @@ def test_region_layer_and_side_fields(tmp_path):
     route_layers = [r.layers for r in imported.regions if r.role == "route_keepout"]
     assert route_layers == ["INNER", "ALL"]
     assert any("'L7'" in message.text for message in imported.messages)
+
+
+def test_idf2_ten_nanometer_units(tmp_path):
+    content = IDF2_BOARD.replace('"TestBoard" MM', '"TestBoard" TNM') + (
+        "\n.DRILLED_HOLES\n300000 5000000 2500000 NPTH BOARD\n.END_DRILLED_HOLES\n"
+    )
+    imported = import_idf(str(_write(tmp_path, content)))
+    assert (imported.source_units, imported.unit_scale) == ("TNM", 1e-5)
+    (hole,) = imported.holes
+    circle = hole.geometry
+    assert (circle.center.x, circle.center.y, circle.radius) == pytest.approx((50, 25, 1.5))
+    assert not imported.messages
+
+
+@pytest.mark.parametrize("status", ["", '""'], ids=["omitted", "empty-string"])
+def test_idf2_blank_placement_status_means_placed(tmp_path, status):
+    content = IDF2_BOARD + (
+        f'\n.PLACEMENT\n"0603" "R0603_10K" "R1"\n20 10 90 TOP {status}\n.END_PLACEMENT\n'
+    )
+    imported = import_idf(str(_write(tmp_path, content)))
+    assert [(p.refdes, p.side, p.status) for p in imported.placements] == [("R1", "TOP", "PLACED")]
+    assert not imported.messages
+
+
+def test_idf2_place_keepout_minimum_height_warns(tmp_path):
+    section = (
+        ".PLACE_KEEPOUT\nTOP 5 1\n0 10 10 0\n0 20 10 0\n0 20 20 0\n0 10 10 0\n.END_PLACE_KEEPOUT\n"
+    )
+    imported = import_idf(str(_write(tmp_path, IDF2_BOARD + "\n" + section)))
+    (region,) = imported.regions
+    assert (region.layers, region.thickness, region.owner) == ("TOP", 5, "")
+    assert [m.text for m in imported.messages] == [
+        "IDF 2.0 .PLACE_KEEPOUT on line 16 has minimum height 1, which is not kept"
+    ]
