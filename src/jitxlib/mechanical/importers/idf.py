@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 _UNIT_TO_MM = {"MM": 1.0, "THOU": 0.0254}
 _ROUTING_LAYERS = frozenset({"TOP", "BOTTOM", "BOTH", "INNER", "ALL"})
 _BOARD_SIDES = frozenset({"TOP", "BOTTOM", "BOTH"})
+_OWNERS = frozenset({"ECAD", "MCAD", "UNOWNED"})
+_PLACEMENT_SIDES = frozenset({"TOP", "BOTTOM"})
+# FIXED is IDF 2.0 only and MCAD/ECAD are IDF 3.0 only; both are accepted for either version.
+_PLACEMENT_STATUSES = frozenset({"PLACED", "UNPLACED", "FIXED", "MCAD", "ECAD"})
 _CLOSURE_EPSILON = 1e-6
 
 
@@ -90,7 +94,9 @@ def import_idf(
         The imported geometry, source metadata, and messages.
 
     Raises:
-        IdfException: If a required section or field is missing, or the file has
+        IdfException: If a required section or field is missing, an outline
+            owner or a placement side or status is not a known value, a
+            placement section ends with an incomplete record, or the file has
             more than one board outline.
         ValueError: If ``hole_policy`` is not recognized or a numeric field is not
             a number.
@@ -168,8 +174,7 @@ class IdfParser:
                 )
             elif token == ".DRILLED_HOLES":
                 end_pos = self._find_section_end(tokens[i + 1 :], ".END_DRILLED_HOLES")
-                version = self.header.idf_version if self.header else 3.0
-                self._parse_holes(tokens[i + 1 : i + 1 + end_pos], version)
+                self._parse_holes(tokens[i + 1 : i + 1 + end_pos], self._idf_version())
                 i = i + 1 + end_pos + 1
             elif token == ".NOTES":
                 end_pos = self._find_section_end(tokens[i + 1 :], ".END_NOTES")
@@ -177,8 +182,7 @@ class IdfParser:
                 i = i + 1 + end_pos + 1
             elif token == ".PLACEMENT":
                 end_pos = self._find_section_end(tokens[i + 1 :], ".END_PLACEMENT")
-                version = self.header.idf_version if self.header else 3.0
-                self._parse_placement(tokens[i + 1 : i + 1 + end_pos], version)
+                self._parse_placement(tokens[i + 1 : i + 1 + end_pos], self._idf_version())
                 i = i + 1 + end_pos + 1
             elif token.startswith(".") and not token.startswith(".END_"):
                 i = self._skip_unknown_section(tokens, i, token)
@@ -249,16 +253,27 @@ class IdfParser:
         if self.header.units.upper() not in _UNIT_TO_MM:
             self.result.warn(f"Unknown IDF units {self.header.units!r}; assuming millimeters")
 
+    def _idf_version(self) -> float:
+        return self.header.idf_version if self.header else 3.0
+
+    def _check_owner(self, section: str, owner: str) -> None:
+        if owner.upper() not in _OWNERS:
+            raise IdfException(
+                f"IDF {self._idf_version()} {section} owner is {owner!r}; "
+                "expected ECAD, MCAD, or UNOWNED"
+            )
+
     def _parse_board_or_panel_outline(
         self, section: str, section_tokens: list[str]
     ) -> tuple[Geometry, list[Geometry]] | None:
-        if self.header and self.header.idf_version < 3.0:
+        if self._idf_version() < 3.0:
             if len(section_tokens) < 1:
                 return None
             loop_tokens = section_tokens[1:]
         else:
             if len(section_tokens) < 2:
                 return None
+            self._check_owner(section, section_tokens[0])
             loop_tokens = section_tokens[2:]
         geometries = self._points_to_geometries(self._parse_loop_points(loop_tokens), section)
         if not geometries:
@@ -278,6 +293,8 @@ class IdfParser:
         end_pos = self._find_section_end(tokens[i + 1 :], ".END_" + tokens[i][1:])
         section_tokens = tokens[i + 1 : i + 1 + end_pos]
         owner = section_tokens[0] if section_tokens else ""
+        if section_tokens:
+            self._check_owner(tokens[i], owner)
         layers = ""
         if layers_at is not None and len(section_tokens) > layers_at:
             layers = section_tokens[layers_at].upper()
@@ -491,25 +508,38 @@ class IdfParser:
         rotation_at = 5 if idf_version < 3.0 else 6
         i = 0
         while i + record_size - 1 < len(tokens):
+            refdes = tokens[i + 2]
+            side = tokens[i + rotation_at + 1]
+            status = tokens[i + rotation_at + 2]
+            if side.upper() not in _PLACEMENT_SIDES:
+                raise _placement_error(
+                    idf_version,
+                    f"record for {refdes!r} has side {side!r}, expected TOP or BOTTOM",
+                )
+            if status.upper() not in _PLACEMENT_STATUSES:
+                raise _placement_error(
+                    idf_version,
+                    f"record for {refdes!r} has status {status!r}, "
+                    "expected PLACED, UNPLACED, FIXED, MCAD, or ECAD",
+                )
             self.result.placements.append(
                 MechanicalPlacement(
                     package=tokens[i],
                     part_number=tokens[i + 1],
-                    refdes=tokens[i + 2],
+                    refdes=refdes,
                     pose=Pose(
                         float(tokens[i + 3]) * self.ucnv,
                         float(tokens[i + 4]) * self.ucnv,
                         float(tokens[i + rotation_at]),
                     ),
-                    side=tokens[i + rotation_at + 1],
-                    status=tokens[i + rotation_at + 2],
+                    side=side,
+                    status=status,
                 )
             )
             i += record_size
         if i < len(tokens):
-            self.result.warn(
-                f"PLACEMENT has {len(tokens) - i} trailing token(s)",
-                source=".PLACEMENT",
+            raise _placement_error(
+                idf_version, f"has {len(tokens) - i} token(s) after the last complete record"
             )
 
     def _skip_unknown_section(self, tokens: list[str], i: int, token: str) -> int:
@@ -549,6 +579,14 @@ class IdfParser:
 
 def _points_differ(a: Point, b: Point) -> bool:
     return abs(a.x - b.x) > _CLOSURE_EPSILON or abs(a.y - b.y) > _CLOSURE_EPSILON
+
+
+def _placement_error(idf_version: float, problem: str) -> IdfException:
+    offset = "" if idf_version < 3.0 else " MOUNTING_OFFSET"
+    return IdfException(
+        f"IDF {idf_version} .PLACEMENT {problem}; records are "
+        f"PACKAGE PART_NUMBER REFDES X Y{offset} ROTATION SIDE STATUS"
+    )
 
 
 def _plating(value: str) -> HolePlating:

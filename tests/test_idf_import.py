@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
 from synthetic import place_keepout, route_keepout, via_keepout, write_emn
 
-from jitxlib.mechanical.importers.idf import import_idf
+from jitxlib.mechanical.importers.idf import IdfException, import_idf
 from jitxlib.mechanical.models import CircleGeometry, ClosedPath, HolePlating, HolePolicy, Pose
 
 
@@ -19,7 +20,7 @@ SIMPLE = """.HEADER
 IDF_FILE 3.0 "Test System" "2024-01-01" 1 "TestBoard" "MM"
 .END_HEADER
 
-.BOARD_OUTLINE "OWNER" 1.6
+.BOARD_OUTLINE "ECAD" 1.6
 0 0 0 0
 0 100 0 0
 0 100 50 0
@@ -56,7 +57,7 @@ def test_idf_board_cutout_loop(tmp_path):
 IDF_FILE 3.0 "Test System" "2024-01-01" 1 "TestBoard" "MM"
 .END_HEADER
 
-.BOARD_OUTLINE "OWNER" 1.6
+.BOARD_OUTLINE "ECAD" 1.6
 0 0 0 0
 0 100 0 0
 0 100 50 0
@@ -117,7 +118,7 @@ def test_idf_notes_placement_keepouts_and_unknown_sections_reported(tmp_path):
 "0603" "R0603_10K" "R1" 20 10 0 0 "TOP" "PLACED"
 .END_PLACEMENT
 
-.ROUTE_KEEPOUT "OWNER" "TOP"
+.ROUTE_KEEPOUT "ECAD" "TOP"
 0 10 10 0
 0 20 10 0
 0 20 20 0
@@ -167,12 +168,61 @@ def test_idf_placement_record_layout_follows_header_version(
     assert not imported.messages
 
 
+@pytest.mark.parametrize(
+    ("board", "records", "message"),
+    [
+        (
+            SIMPLE,
+            '"0603" "R0603_10K" "R1" 20 10 90 "TOP" "PLACED"\n'
+            '"0805" "C0805_1U" "C1" 30 15 180 "BOTTOM" "PLACED"',
+            "IDF 3.0 .PLACEMENT record for 'R1' has side 'PLACED'",
+        ),
+        (
+            SIMPLE,
+            '"0603" "R0603_10K" "R1" 20 10 90 "TOP" "PLACED"',
+            "IDF 3.0 .PLACEMENT has 8 token(s) after the last complete record",
+        ),
+        (
+            IDF2_BOARD,
+            '"0603" "R0603_10K" "R1" 20 10 90 "TOP" "MOUNTED"',
+            "IDF 2.0 .PLACEMENT record for 'R1' has status 'MOUNTED'",
+        ),
+    ],
+    ids=["two-idf2-records-in-idf3", "one-idf2-record-in-idf3", "unknown-status"],
+)
+def test_idf_misaligned_placement_raises(tmp_path, board, records, message):
+    content = board + f"\n.PLACEMENT\n{records}\n.END_PLACEMENT\n"
+    with pytest.raises(IdfException, match=re.escape(message)):
+        import_idf(str(_write(tmp_path, content)))
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        (
+            IDF2_BOARD
+            + ".ROUTE_KEEPOUT\nTOP\n0 10 10 0\n0 20 10 0\n0 20 20 0\n0 10 10 0\n.END_ROUTE_KEEPOUT\n",
+            "IDF 2.0 .ROUTE_KEEPOUT owner is 'TOP'",
+        ),
+        (
+            '.HEADER\nIDF_FILE 3.0 "Test System" "2024-01-01" 1 "TestBoard" "MM"\n.END_HEADER\n'
+            ".BOARD_OUTLINE 1.6\n0 0 0 0\n0 100 0 0\n0 100 50 0\n0 0 0 0\n.END_BOARD_OUTLINE\n",
+            "IDF 3.0 .BOARD_OUTLINE owner is '1.6'",
+        ),
+    ],
+    ids=["idf2-keepout", "idf3-board-outline"],
+)
+def test_idf_outline_without_owner_raises(tmp_path, content, message):
+    with pytest.raises(IdfException, match=re.escape(message)):
+        import_idf(str(_write(tmp_path, content)))
+
+
 def test_idf_arc_start_boundary_does_not_construct_jitx_arc(tmp_path):
     content = """.HEADER
 IDF_FILE 3.0 "Test" "2024-01-01" 1 "Test" "MM"
 .END_HEADER
 
-.BOARD_OUTLINE "OWNER" 1.6
+.BOARD_OUTLINE "ECAD" 1.6
 0 0 0 0
 0 10 0 0
 0 10 10 90
